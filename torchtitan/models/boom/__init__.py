@@ -23,11 +23,11 @@ __all__ = [
     "pipeline_llama",
     "TransformerModelArgs",
     "Transformer",
-    "llama3_configs",
+    "boom_configs",
 ]
 
 
-llama3_configs = {
+boom_configs = {
     "debugmodel": TransformerModelArgs(
         dim=256, n_layers=6, n_heads=16, vocab_size=2000, rope_theta=500000
     ),
@@ -94,9 +94,9 @@ llama3_configs = {
 
 register_train_spec(
     TrainSpec(
-        name="llama3",
+        name="boom",
         model_cls=Transformer,
-        model_args=llama3_configs,
+        model_args=boom_configs,
         parallelize_fn=parallelize_llama,
         pipelining_fn=pipeline_llama,
         build_optimizers_fn=build_optimizers,

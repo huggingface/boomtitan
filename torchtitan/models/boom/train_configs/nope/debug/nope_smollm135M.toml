@@ -21,7 +21,7 @@ save_tb_folder = "tb"
 enable_wandb = true
 
 [model]
-name = "llama3"
+name = "boom"
 freq_nope = 4
 flavor = "smollm135M"
 # test folder with tokenizer.json, for debug purpose only

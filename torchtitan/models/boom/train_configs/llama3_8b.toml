@@ -16,7 +16,7 @@ enable_tensorboard = true
 save_tb_folder = "tb"
 
 [model]
-name = "llama3"
+name = "boom"
 flavor = "8B"
 tokenizer_path = "./assets/tokenizer/Llama-3.1-8B"
 # converters = ["float8"]

@@ -21,7 +21,7 @@ save_tb_folder = "tb"
 enable_wandb = false
 
 [model]
-name = "llama3"
+name = "boom"
 flavor = "debugmodel"
 # test folder with tokenizer.json, for debug purpose only
 tokenizer_path = "./tests/assets/tokenizer"
