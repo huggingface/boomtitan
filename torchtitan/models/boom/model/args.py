@@ -28,6 +28,7 @@ class TransformerModelArgs(BaseModelArgs):
     norm_eps: float = 1e-5
     rope_theta: float = 10000
     freq_nope: int | None = None  # Frequency for disabling RoPE (every Nth layer)
+    use_qk_norm: bool = False  # Enable Query-Key normalization for attention stability
     max_seq_len: int = 131072
     # If `True`, then each transformer block init uses its layer ID, and if
     # `False`, each uses the total number of transformer blocks
@@ -72,6 +73,10 @@ class TransformerModelArgs(BaseModelArgs):
                 logger.warning(
                     f"freq_nope ({self.freq_nope}) > n_layers ({self.n_layers}) - no layers will disable RoPE"
                 )
+
+        # Handle use_qk_norm parameter
+        if hasattr(job_config.model, "use_qk_norm"):
+            self.use_qk_norm = job_config.model.use_qk_norm
 
     def get_nparams_and_flops(self, model: nn.Module, seq_len: int) -> tuple[int, int]:
         nparams = sum(p.numel() for p in model.parameters())

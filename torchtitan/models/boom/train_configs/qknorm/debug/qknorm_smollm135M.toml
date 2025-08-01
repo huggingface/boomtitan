@@ -23,7 +23,7 @@ enable_wandb = true
 [model]
 name = "boom"
 flavor = "smollm135M"
-freq_nope = 4
+use_qk_norm = true
 # test folder with tokenizer.json, for debug purpose only
 tokenizer_path = "./tests/assets/tokenizer"
 # converters = ["float8"]
@@ -34,7 +34,7 @@ lr = 8e-4
 eps = 1e-8
 
 [lr_scheduler]
-warmup_steps = 200  # lr scheduler warm up, normally 20% of the train steps
+warmup_steps = 10  # lr scheduler warm up, normally 20% of the train steps
 decay_ratio = 0.8  # lr scheduler decay ratio, 80% of the train steps
 decay_type = "linear"
 min_lr_factor = 0.0
@@ -43,11 +43,9 @@ min_lr_factor = 0.0
 local_batch_size = 32
 seq_len = 2048
 max_norm = 1.0  # grad norm clipping
-steps = 1000
+steps = 50
 compile = true
-dataset = "c4"  # supported datasets: c4_test (2K), c4 (177M)
-seed = 42  # for reproducibility
-deterministic = true  # For full determinism (slower but exact reproducibility)
+dataset = "c4_test"  # supported datasets: c4_test (2K), c4 (177M)
 
 [parallelism]
 data_parallel_replicate_degree = 1
@@ -79,4 +77,4 @@ filter_fqns = ["output"]
 enabled = false
 dataset = "c4_validation"
 freq = 5
-steps = 100
+steps = 10

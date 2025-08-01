@@ -23,7 +23,6 @@ enable_wandb = true
 [model]
 name = "boom"
 flavor = "smollm135M"
-freq_nope = 4
 # test folder with tokenizer.json, for debug purpose only
 tokenizer_path = "./tests/assets/tokenizer"
 # converters = ["float8"]

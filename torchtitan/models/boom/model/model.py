@@ -13,6 +13,7 @@ from torch import nn
 
 from torchtitan.models.attention import build_attention, init_attention_mask
 from torchtitan.protocols.train_spec import ModelProtocol
+from torchtitan.tools.logging import logger
 
 from .args import TransformerModelArgs
 
@@ -95,6 +96,42 @@ def apply_rotary_emb(
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 
+class QKNorm(nn.Module):
+    """
+    Query-Key normalization module for improved attention stability.
+    
+    Applies RMSNorm to query and key tensors separately before attention computation.
+    This helps stabilize training by preventing query/key magnitudes from growing too large.
+    """
+    
+    def __init__(self, dim: int, eps: float = 1e-5):
+        super().__init__()
+        self.query_norm = nn.RMSNorm(dim, eps=eps)
+        self.key_norm = nn.RMSNorm(dim, eps=eps)
+
+    def init_weights(self):
+        """Initialize normalization layer parameters."""
+        self.query_norm.reset_parameters()
+        self.key_norm.reset_parameters()
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Apply normalization to query and key tensors.
+        
+        Args:
+            q: Query tensor [batch, seq_len, n_heads, head_dim]
+            k: Key tensor [batch, seq_len, n_kv_heads, head_dim] 
+            v: Value tensor (used for dtype reference)
+            
+        Returns:
+            Tuple of normalized query and key tensors, cast to match value dtype
+        """
+        q_norm = self.query_norm(q)
+        k_norm = self.key_norm(k)
+        # Ensure output dtype matches the value tensor for mixed precision compatibility
+        return q_norm.to(v.dtype), k_norm.to(v.dtype)
+
+
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     """torch.repeat_interleave(x, dim=2, repeats=n_rep)"""
     bs, slen, n_kv_heads, head_dim = x.shape
@@ -148,6 +185,21 @@ class Attention(nn.Module):
         self.wo = nn.Linear(
             model_args.n_heads * self.head_dim, model_args.dim, bias=False
         )
+        
+        # Initialize QKNorm if enabled
+        if model_args.use_qk_norm:
+            self.qk_norm = QKNorm(self.head_dim, eps=model_args.norm_eps)
+            # Log QKNorm usage only on rank 0
+            if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+                logger.debug(f"Layer {layer_id}: QKNorm enabled with head_dim={self.head_dim}, eps={model_args.norm_eps}")
+            elif not torch.distributed.is_initialized():
+                logger.debug(f"Layer {layer_id}: QKNorm enabled with head_dim={self.head_dim}, eps={model_args.norm_eps}")
+        else:
+            if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+                logger.debug(f"Layer {layer_id}: QKNorm disabled")
+            self.qk_norm = None
+            
+        # Configure RoPE usage based on freq_nope
         if self.freq_nope is not None:
             if (self.layer_id + 1) % self.freq_nope == 0:
                 self.use_rope = False
@@ -155,12 +207,15 @@ class Attention(nn.Module):
                 self.use_rope = True
         else:
             self.use_rope = True
+            
         self.sdpa = build_attention(model_args.use_flex_attn, model_args.attn_mask_type)
 
     def init_weights(self, init_std: float):
         for linear in (self.wq, self.wk, self.wv):
             nn.init.trunc_normal_(linear.weight, mean=0.0, std=0.02)
         nn.init.trunc_normal_(self.wo.weight, mean=0.0, std=init_std)
+        if self.qk_norm is not None:
+            self.qk_norm.init_weights()
 
     def forward(
         self,
@@ -189,6 +244,10 @@ class Attention(nn.Module):
         xk = xk.view(bs, seqlen, -1, self.head_dim)
         xv = xv.view(bs, seqlen, -1, self.head_dim)
 
+        # Apply Query-Key normalization if enabled
+        if self.qk_norm is not None:
+            xq, xk = self.qk_norm(xq, xk, xv)
+            
         # Apply rotary embeddings conditionally based on freq_nope setting
         if self.use_rope:
             xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)

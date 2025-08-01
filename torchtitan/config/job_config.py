@@ -95,6 +95,12 @@ class Model:
     converters have been applied.
     """
 
+    use_qk_norm: bool = False
+    """Enable Query-Key normalization for attention stability"""
+
+    freq_nope: int | None = None
+    """Frequency for disabling RoPE (every Nth layer). If None, RoPE is used in all layers"""
+
 
 @dataclass
 class Optimizer:
