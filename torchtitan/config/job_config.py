@@ -120,6 +120,16 @@ class Optimizer:
     weight_decay: float = 0.1
     """Weight decay to use"""
 
+    # Weight decay exclusion parameters
+    wd_embeddings: bool = False
+    """Whether to apply weight decay to embedding parameters (tok_embeddings)"""
+    
+    wd_norm: bool = False  
+    """Whether to apply weight decay to normalization layers (RMSNorm)"""
+    
+    wd_qknorm: bool = False
+    """Whether to apply weight decay to QKNorm parameters"""
+
     implementation: Literal["for-loop", "foreach", "fused"] = "fused"
     """
     Specify which optimizer implementation to use:
