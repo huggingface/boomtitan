@@ -23,7 +23,7 @@ enable_wandb = true
 [model]
 name = "boom"
 flavor = "smollm135M"
-freq_nope = 4
+use_qk_norm = true
 # test folder with tokenizer.json, for debug purpose only
 tokenizer_path = "./tests/assets/tokenizer"
 # converters = ["float8"]
@@ -46,7 +46,7 @@ max_norm = 1.0  # grad norm clipping
 steps = 1000
 compile = true
 dataset = "c4"  # supported datasets: c4_test (2K), c4 (177M)
-seed = 42  # for reproducibility
+seed = 42  # Or any fixed integer
 deterministic = true  # For full determinism (slower but exact reproducibility)
 
 [parallelism]
