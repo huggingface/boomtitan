@@ -128,7 +128,7 @@ class Optimizer:
 
     # Weight decay exclusion parameters
     wd_embeddings: bool = False
-    """Whether to apply weight decay to embedding parameters (tok_embeddings)"""
+    """Whether to apply weight decay to embedding parameters (includes both input embeddings and output layer)"""
     
     wd_norm: bool = False  
     """Whether to apply weight decay to normalization layers (RMSNorm)"""

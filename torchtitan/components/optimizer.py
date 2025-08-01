@@ -277,7 +277,9 @@ def get_param_groups(optimizer_config: OptimizerConfig, model: nn.Module) -> lis
             
         should_decay = True
         
-        # Check for embedding parameters (both input embeddings and output/lm_head)
+        # Check for embedding parameters
+        # This includes both input embeddings (tok_embeddings) and output projection layer (output)
+        # Following the practice from models like OLMo where tied embeddings share weight decay behavior
         if ("tok_embeddings" in name or "output" in name) and not optimizer_config.wd_embeddings:
             should_decay = False
             
@@ -305,6 +307,19 @@ def get_param_groups(optimizer_config: OptimizerConfig, model: nn.Module) -> lis
         logger.debug(f"  - Settings: wd_embeddings={optimizer_config.wd_embeddings}, wd_norm={optimizer_config.wd_norm}, wd_qknorm={optimizer_config.wd_qknorm}")
         if no_decay_names:
             logger.debug(f"  - No decay parameters: {no_decay_names[:10]}{'...' if len(no_decay_names) > 10 else ''}")
+        
+        # Validate that exclusions are working as expected
+        embeddings_found = any("tok_embeddings" in name or "output" in name for name in no_decay_names)
+        norms_found = any(any(norm_name in name for norm_name in ["attention_norm", "ffn_norm", ".norm"]) for name in no_decay_names)
+        qknorm_found = any("qk_norm" in name for name in no_decay_names)
+        
+        if not optimizer_config.wd_embeddings and not embeddings_found:
+            logger.warning("wd_embeddings=False but no embedding/output parameters found to exclude from weight decay")
+        if not optimizer_config.wd_norm and not norms_found:
+            logger.warning("wd_norm=False but no normalization parameters found to exclude from weight decay")
+        if not optimizer_config.wd_qknorm and qknorm_found:
+            # Only warn if QKNorm is actually present in the model
+            logger.warning("wd_qknorm=False but no QKNorm parameters found to exclude from weight decay")
     
     # Create parameter groups
     param_groups = []
@@ -381,27 +396,23 @@ def build_optimizers(
         not optimizer_config.wd_qknorm
     )
     
+    # Build base optimizer kwargs
+    optimizer_kwargs = {
+        "lr": lr,
+        "betas": (beta1, beta2),
+        "eps": eps,
+        "fused": fused,
+        "foreach": foreach,
+    }
+    
     # Parameter groups are only supported for single model (non-PP) and not with optim_in_bwd
     param_groups = None
     if use_param_groups and len(model_parts) == 1 and not optim_in_bwd:
         param_groups = get_param_groups(optimizer_config, model_parts[0])
-        # Remove weight_decay from optimizer_kwargs when using param groups
-        optimizer_kwargs = {
-            "lr": lr,
-            "betas": (beta1, beta2),
-            "eps": eps,
-            "fused": fused,
-            "foreach": foreach,
-        }
+        # Don't add weight_decay to optimizer_kwargs when using param groups
     else:
-        optimizer_kwargs = {
-            "lr": lr,
-            "betas": (beta1, beta2),
-            "eps": eps,
-            "weight_decay": weight_decay,
-            "fused": fused,
-            "foreach": foreach,
-        }
+        # Add weight_decay when not using parameter groups
+        optimizer_kwargs["weight_decay"] = weight_decay
 
     optimizer_classes = {
         "Adam": torch.optim.Adam,
