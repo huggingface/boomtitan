@@ -59,14 +59,19 @@ class TransformerModelArgs(BaseModelArgs):
                 "PP + block causal FlexAttention support will be fixed soon."
             )
         self.max_seq_len = seq_len
-        
+
         # Validate freq_nope parameter
-        if hasattr(job_config.model, 'freq_nope') and job_config.model.freq_nope is not None:
+        if (
+            hasattr(job_config.model, "freq_nope")
+            and job_config.model.freq_nope is not None
+        ):
             self.freq_nope = job_config.model.freq_nope
             if self.freq_nope <= 0:
                 raise ValueError("freq_nope must be positive")
             if self.freq_nope > self.n_layers:
-                logger.warning(f"freq_nope ({self.freq_nope}) > n_layers ({self.n_layers}) - no layers will disable RoPE")
+                logger.warning(
+                    f"freq_nope ({self.freq_nope}) > n_layers ({self.n_layers}) - no layers will disable RoPE"
+                )
 
     def get_nparams_and_flops(self, model: nn.Module, seq_len: int) -> tuple[int, int]:
         nparams = sum(p.numel() for p in model.parameters())
