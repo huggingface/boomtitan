@@ -68,6 +68,12 @@ class Metrics:
 
     enable_wandb: bool = False
     """Whether to log metrics to Weights & Biases"""
+    
+    log_param_norms: bool = False
+    """Whether to log L1/L2 norms for each layer's parameters"""
+    
+    log_param_norms_freq: int = 100
+    """How often to log parameter norms, in iterations (only used if log_param_norms=True)"""
 
 
 @dataclass

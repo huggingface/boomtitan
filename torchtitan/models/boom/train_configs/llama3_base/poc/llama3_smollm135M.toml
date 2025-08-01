@@ -19,6 +19,8 @@ disable_color_printing = false
 enable_tensorboard = false
 save_tb_folder = "tb"
 enable_wandb = true
+log_param_norms = true
+log_param_norms_freq = 1  # Log parameter norms every 10 steps
 
 [model]
 name = "boom"
