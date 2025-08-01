@@ -113,7 +113,7 @@ class Attention(nn.Module):
 
     Args:
         model_args (TransformerModelArgs): Model configuration arguments.
-        layer_id (int): We need this for nope
+        layer_id (int): Layer identifier used for conditional RoPE (NoRoPE) application
 
     Attributes:
         n_kv_heads (int): Number of key and value heads.
@@ -148,8 +148,11 @@ class Attention(nn.Module):
         self.wo = nn.Linear(
             model_args.n_heads * self.head_dim, model_args.dim, bias=False
         )
-        if (self.layer_id + 1) % self.freq_nope == 0:
-            self.use_rope = False
+        if self.freq_nope is not None:
+            if (self.layer_id + 1) % self.freq_nope == 0:
+                self.use_rope = False
+            else:
+                self.use_rope = True
         else:
             self.use_rope = True
         self.sdpa = build_attention(model_args.use_flex_attn, model_args.attn_mask_type)
@@ -186,6 +189,7 @@ class Attention(nn.Module):
         xk = xk.view(bs, seqlen, -1, self.head_dim)
         xv = xv.view(bs, seqlen, -1, self.head_dim)
 
+        # Apply rotary embeddings conditionally based on freq_nope setting
         if self.use_rope:
             xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 

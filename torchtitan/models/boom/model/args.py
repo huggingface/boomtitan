@@ -27,7 +27,7 @@ class TransformerModelArgs(BaseModelArgs):
     ffn_dim_multiplier: float | None = None
     norm_eps: float = 1e-5
     rope_theta: float = 10000
-    freq_nope: int | None = None
+    freq_nope: int | None = None  # Frequency for disabling RoPE (every Nth layer)
     max_seq_len: int = 131072
     # If `True`, then each transformer block init uses its layer ID, and if
     # `False`, each uses the total number of transformer blocks
@@ -59,7 +59,14 @@ class TransformerModelArgs(BaseModelArgs):
                 "PP + block causal FlexAttention support will be fixed soon."
             )
         self.max_seq_len = seq_len
-        self.freq_nope = job_config.model.freq_nope
+        
+        # Validate freq_nope parameter
+        if hasattr(job_config.model, 'freq_nope') and job_config.model.freq_nope is not None:
+            self.freq_nope = job_config.model.freq_nope
+            if self.freq_nope <= 0:
+                raise ValueError("freq_nope must be positive")
+            if self.freq_nope > self.n_layers:
+                logger.warning(f"freq_nope ({self.freq_nope}) > n_layers ({self.n_layers}) - no layers will disable RoPE")
 
     def get_nparams_and_flops(self, model: nn.Module, seq_len: int) -> tuple[int, int]:
         nparams = sum(p.numel() for p in model.parameters())
