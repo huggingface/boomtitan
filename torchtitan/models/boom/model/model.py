@@ -189,15 +189,13 @@ class Attention(nn.Module):
         # Initialize QKNorm if enabled
         if model_args.use_qk_norm:
             self.qk_norm = QKNorm(self.head_dim, eps=model_args.norm_eps)
-            # Log QKNorm usage only on rank 0
-            if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
-                logger.debug(f"Layer {layer_id}: QKNorm enabled with head_dim={self.head_dim}, eps={model_args.norm_eps}")
-            elif not torch.distributed.is_initialized():
-                logger.debug(f"Layer {layer_id}: QKNorm enabled with head_dim={self.head_dim}, eps={model_args.norm_eps}")
         else:
-            if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
-                logger.debug(f"Layer {layer_id}: QKNorm disabled")
             self.qk_norm = None
+            
+        # Log QKNorm status only on rank 0 (debug level)
+        if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+            status = f"enabled with head_dim={self.head_dim}, eps={model_args.norm_eps}" if self.qk_norm else "disabled"
+            logger.debug(f"Layer {layer_id}: QKNorm {status}")
             
         # Configure RoPE usage based on freq_nope
         if self.freq_nope is not None:
