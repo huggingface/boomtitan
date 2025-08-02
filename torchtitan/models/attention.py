@@ -19,6 +19,7 @@ from torch.nn.attention.flex_attention import (
 )
 
 from torchtitan.tools.utils import has_cuda_capability
+from torchtitan.tools.logging import logger
 
 # FlexAttention mask type. For each mask type, we initialize it at most once per
 # batch. To record what it is initialized, FLEX_ATTN_MASK_T is used as the key to
@@ -65,7 +66,7 @@ class FlexAttention(torch.nn.Module):
         self, attn_mask_type: str, fixed_block_size: int | None = None
     ) -> None:
         super().__init__()
-        if attn_mask_type not in ["causal", "block_causal"]:
+        if attn_mask_type not in ["causal", "block_causal", "document_causal"]:
             raise ValueError(f"Unrecognized attn_mask_type {attn_mask_type}.")
         self.attn_mask_type = attn_mask_type
         self.fixed_block_size = fixed_block_size
@@ -114,6 +115,30 @@ class FlexAttention(torch.nn.Module):
         return block_causal_mask
 
     @staticmethod
+    def _get_document_causal_mask_mod(
+        batch: torch.Tensor, eos_id: int
+    ) -> _mask_mod_signature:
+        # batch is [b, s, h, d] shape
+        # Document boundaries are marked by EOS tokens
+        eos_mask = batch == eos_id
+        
+        # Mark document boundaries (1 where new doc starts)
+        doc_boundaries = torch.zeros_like(batch, dtype=torch.int32)
+        doc_boundaries[:, 0] = 1  # First position is always a new doc
+        doc_boundaries[:, 1:] = eos_mask[:, :-1].int()
+        
+        # Cumulative sum gives document IDs
+        document_ids = doc_boundaries.cumsum(dim=1)
+
+        def document_causal_mask(
+            b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor
+        ):
+            # Only allow attention within the same document AND causal
+            return (document_ids[b, q_idx] == document_ids[b, kv_idx]) & (q_idx >= kv_idx)
+
+        return document_causal_mask
+
+    @staticmethod
     def _fixed_block_mask_mod(
         mask_mod: _mask_mod_signature, fixed_block_size: int
     ) -> _mask_mod_signature:
@@ -148,6 +173,7 @@ class FlexAttention(torch.nn.Module):
 
         return blocked_mask_mod
 
+    
     @staticmethod
     @torch.no_grad()
     def init_attention_mask(batch: torch.Tensor, eos_id: int | None) -> None:
@@ -169,6 +195,13 @@ class FlexAttention(torch.nn.Module):
                         )
                     batch_dimension = batch.shape[0]
                     mask_mod = FlexAttention._get_block_causal_mask_mod(batch, eos_id)
+                case "document_causal":
+                    if eos_id is None:
+                        raise RuntimeError(
+                            "eos_id must be provided for document_causal mask."
+                        )
+                    batch_dimension = batch.shape[0]
+                    mask_mod = FlexAttention._get_document_causal_mask_mod(batch, eos_id)
                 case _:
                     raise RuntimeError(f"Shouldn't reach here. {attn_mask_type}")
 
@@ -237,6 +270,96 @@ def build_attention(
                 "TorchTitan with SDPA currently only supports causal mask."
             )
         return ScaledDotProductAttention(attn_mask_type)
+
+
+def visualize_attention_mask(
+    batch: torch.Tensor, 
+    eos_id: int, 
+    attn_mask_type: str,
+    max_tokens: int = 50,
+    batch_idx: int = 0
+) -> str:
+    """
+    Visualize attention mask for debugging purposes.
+    
+    Args:
+        batch: Input tensor of shape [batch_size, seq_len]
+        eos_id: End of sequence token ID
+        attn_mask_type: Type of attention mask ("causal", "block_causal", "document_causal")
+        max_tokens: Maximum number of tokens to visualize (for readability)
+        batch_idx: Which sample in the batch to visualize
+        
+    Returns:
+        String representation of the attention mask
+    """
+    import numpy as np
+    
+    seq_len = min(batch.shape[1], max_tokens)
+    sample = batch[batch_idx, :seq_len]
+    
+    # Create a visualization grid
+    mask_grid = np.zeros((seq_len, seq_len), dtype=str)
+    
+    # Get the appropriate mask function
+    if attn_mask_type == "causal":
+        # Simple causal mask
+        for q_idx in range(seq_len):
+            for kv_idx in range(seq_len):
+                if q_idx >= kv_idx:
+                    mask_grid[q_idx, kv_idx] = "■"
+                else:
+                    mask_grid[q_idx, kv_idx] = "·"
+    
+    elif attn_mask_type in ["block_causal", "document_causal"]:
+        # Compute document/block boundaries
+        eos_mask = sample == eos_id
+        doc_boundaries = torch.zeros_like(sample, dtype=torch.int32)
+        doc_boundaries[0] = 1
+        if seq_len > 1:
+            doc_boundaries[1:] = eos_mask[:-1].int()
+        document_ids = doc_boundaries.cumsum(dim=0)
+        
+        for q_idx in range(seq_len):
+            for kv_idx in range(seq_len):
+                same_doc = document_ids[q_idx] == document_ids[kv_idx]
+                causal = q_idx >= kv_idx
+                if same_doc and causal:
+                    mask_grid[q_idx, kv_idx] = "■"
+                else:
+                    mask_grid[q_idx, kv_idx] = "·"
+    
+    # Build the visualization string
+    output = []
+    output.append(f"\n=== Attention Mask Visualization ({attn_mask_type}) ===")
+    output.append(f"Batch index: {batch_idx}, Sequence length: {seq_len}")
+    output.append(f"■ = can attend, · = cannot attend")
+    
+    # Show token IDs and document boundaries
+    output.append("\nToken IDs: " + " ".join(f"{t:3d}" for t in sample.tolist()))
+    if attn_mask_type in ["block_causal", "document_causal"]:
+        output.append("Doc IDs:   " + " ".join(f"{d:3d}" for d in document_ids.tolist()))
+        output.append("EOS marks: " + " ".join("EOS" if t == eos_id else "   " for t in sample.tolist()))
+    
+    # Show the attention mask grid
+    output.append("\nAttention mask (queries are rows, keys are columns):")
+    output.append("     " + "".join(f"{i:3d}" for i in range(seq_len)))
+    for q_idx in range(seq_len):
+        row = f"{q_idx:3d}: " + "  ".join(mask_grid[q_idx])
+        output.append(row)
+    
+    # Show document boundaries if applicable
+    if attn_mask_type in ["block_causal", "document_causal"]:
+        output.append("\nDocument structure:")
+        current_doc = 0
+        doc_start = 0
+        for i in range(seq_len):
+            if i > 0 and document_ids[i] != current_doc:
+                output.append(f"  Document {current_doc}: tokens {doc_start}-{i-1}")
+                current_doc = document_ids[i].item()
+                doc_start = i
+        output.append(f"  Document {current_doc}: tokens {doc_start}-{seq_len-1}")
+    
+    return "\n".join(output)
 
 
 def init_attention_mask(batch: torch.Tensor, eos_id: int | None) -> None:

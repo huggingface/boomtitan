@@ -106,6 +106,15 @@ class Model:
 
     freq_nope: int | None = None
     """Frequency for disabling RoPE (every Nth layer). If None, RoPE is used in all layers"""
+    
+    use_flex_attn: bool = False
+    """Whether to use FlexAttention instead of standard SDPA"""
+    
+    attn_mask_type: str = "causal"
+    """Type of attention mask: 'causal', 'block_causal', or 'document_causal'"""
+    
+    eos_id: int = 0
+    """End of sequence token ID used for document/block boundaries"""
 
 
 @dataclass
