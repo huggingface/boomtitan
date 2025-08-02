@@ -396,6 +396,20 @@ def build_optimizers(
         not optimizer_config.wd_qknorm
     )
     
+    # Check for incompatible parallelism configurations
+    if use_param_groups:
+        if parallel_dims.pp_enabled:
+            raise ValueError(
+                "Weight decay exclusion (wd_embeddings=False, wd_norm=False, or wd_qknorm=False) "
+                "is not compatible with Pipeline Parallelism. Please either disable weight decay "
+                "exclusions or use a different parallelism strategy."
+            )
+        if parallel_dims.tp_enabled:
+            logger.warning(
+                "Weight decay exclusion with Tensor Parallelism is experimental and may not work "
+                "correctly. Proceed with caution and verify parameter norms using log_param_norms=True."
+            )
+    
     # Build base optimizer kwargs
     optimizer_kwargs = {
         "lr": lr,
