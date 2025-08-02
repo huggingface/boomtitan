@@ -452,6 +452,79 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
 
         return loss
 
+    def _compute_param_norms(self) -> dict[str, float]:
+        """Compute L1 and L2 norms for each layer's parameters."""
+        param_norms = {}
+        
+        for model in self.model_parts:
+            for name, param in model.named_parameters():
+                if param.requires_grad and param.data is not None:
+                    # Compute L1 and L2 norms
+                    l1_norm = param.data.abs().sum().item()
+                    l2_norm = param.data.norm(2).item()
+                    
+                    # Parse the parameter name to create a structured metric name
+                    if "tok_embeddings" in name:
+                        # Embedding layer
+                        metric_base = "param_norms/layer_0/embeddings"
+                    elif "output" in name:
+                        # Output layer (lm_head)
+                        metric_base = "param_norms/output/weight"
+                    elif "layers." in name:
+                        # Extract layer number and component
+                        parts = name.split(".")
+                        layer_idx = None
+                        component = None
+                        
+                        # Find layer index
+                        for i, part in enumerate(parts):
+                            if part == "layers" and i + 1 < len(parts):
+                                layer_idx = int(parts[i + 1]) + 1  # Add 1 so layer 0 becomes layer 1
+                                remaining = ".".join(parts[i + 2:])
+                                
+                                # Identify component type
+                                if "attention.wq" in remaining:
+                                    component = "attn_q"
+                                elif "attention.wk" in remaining:
+                                    component = "attn_k"
+                                elif "attention.wv" in remaining:
+                                    component = "attn_v"
+                                elif "attention.wo" in remaining:
+                                    component = "attn_o"
+                                elif "attention_norm" in remaining:
+                                    component = "attn_norm"
+                                elif "feed_forward.w1" in remaining:
+                                    component = "ffn_gate"
+                                elif "feed_forward.w2" in remaining:
+                                    component = "ffn_down"
+                                elif "feed_forward.w3" in remaining:
+                                    component = "ffn_up"
+                                elif "ffn_norm" in remaining:
+                                    component = "ffn_norm"
+                                elif "qk_norm.query_norm" in remaining:
+                                    component = "qk_norm_q"
+                                elif "qk_norm.key_norm" in remaining:
+                                    component = "qk_norm_k"
+                                break
+                        
+                        if layer_idx is not None and component is not None:
+                            metric_base = f"param_norms/layer_{layer_idx}/{component}"
+                        else:
+                            # Fallback for unrecognized patterns
+                            metric_base = f"param_norms/other/{name.replace('.', '_')}"
+                    else:
+                        # Handle other parameters (e.g., final norm)
+                        if "norm" in name:
+                            metric_base = "param_norms/final_norm/weight"
+                        else:
+                            metric_base = f"param_norms/other/{name.replace('.', '_')}"
+                    
+                    # Add L1 and L2 norms
+                    param_norms[f"{metric_base}/l1"] = l1_norm
+                    param_norms[f"{metric_base}/l2"] = l2_norm
+        
+        return param_norms
+
     def train_step(
         self, data_iterator: Iterable[tuple[dict[str, torch.Tensor], torch.Tensor]]
     ):
@@ -509,6 +582,13 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
             "n_tokens_seen": self.ntokens_seen,
             "lr": lr,
         }
+        
+        # Compute parameter norms for weight decay monitoring if enabled
+        if (self.job_config.metrics.log_param_norms and 
+            self.step % self.job_config.metrics.log_param_norms_freq == 0):
+            param_norms = self._compute_param_norms()
+            extra_metrics.update(param_norms)
+        
         self.metrics_processor.log(
             self.step,
             global_avg_loss,

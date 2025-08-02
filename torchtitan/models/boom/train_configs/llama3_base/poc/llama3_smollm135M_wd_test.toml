@@ -1,8 +1,8 @@
-# torchtitan Config.toml
+# torchtitan Config.toml - Testing weight decay exclusion
 
 [job]
 dump_folder = "./outputs"
-description = "Smollm2 135M debug training"
+description = "Smollm2 135M weight decay exclusion test"
 print_args = false
 use_for_integration_test = true
 
@@ -19,8 +19,6 @@ disable_color_printing = false
 enable_tensorboard = false
 save_tb_folder = "tb"
 enable_wandb = true
-log_param_norms = true
-log_param_norms_freq = 1  # Log parameter norms every 10 steps
 
 [model]
 name = "boom"
@@ -33,6 +31,11 @@ tokenizer_path = "./tests/assets/tokenizer"
 name = "AdamW"
 lr = 8e-4
 eps = 1e-8
+weight_decay = 0.1
+# Weight decay exclusion settings
+wd_embeddings = false  # Exclude embeddings and output layer from weight decay
+wd_norm = false       # Exclude normalization layers from weight decay  
+wd_qknorm = false     # Exclude QKNorm layers from weight decay (if enabled)
 
 [lr_scheduler]
 warmup_steps = 200  # lr scheduler warm up, normally 20% of the train steps

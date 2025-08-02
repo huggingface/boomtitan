@@ -20,6 +20,7 @@ from torch.optim import Optimizer
 from torchtitan.components.ft import FTManager, has_torchft
 from torchtitan.config import Optimizer as OptimizerConfig
 from torchtitan.distributed import ParallelDims
+from torchtitan.tools.logging import logger
 
 __all__ = [
     "OptimizersContainer",
@@ -68,15 +69,25 @@ class OptimizersContainer(Optimizer, Stateful, Generic[T]):
         model_parts: list[nn.Module],
         optimizer_cls: type[T],
         optimizer_kwargs: dict[str, Any],
+        param_groups: list[dict[str, Any]] | None = None,
     ) -> None:
         all_params = []
         self.optimizers = []
         self.model_parts = model_parts
-        for model in self.model_parts:
-            params = [p for p in model.parameters() if p.requires_grad]
-            self.optimizers.append(optimizer_cls(params, **optimizer_kwargs))
-            all_params.extend(params)
-        self._validate_length(len(self.model_parts))
+        
+        if param_groups is not None:
+            # Use provided parameter groups (for weight decay exclusion)
+            self.optimizers.append(optimizer_cls(param_groups, **optimizer_kwargs))
+            for group in param_groups:
+                all_params.extend(group["params"])
+        else:
+            # Default behavior: one optimizer per model part
+            for model in self.model_parts:
+                params = [p for p in model.parameters() if p.requires_grad]
+                self.optimizers.append(optimizer_cls(params, **optimizer_kwargs))
+                all_params.extend(params)
+                
+        self._validate_length(len(self.model_parts) if param_groups is None else 1)
         self._post_init(all_params, optimizer_kwargs)
 
     def __iter__(self) -> Iterator[T]:
@@ -115,7 +126,7 @@ class OptimizersContainer(Optimizer, Stateful, Generic[T]):
     def _validate_length(self, expected_length: int) -> None:
         assert expected_length == len(self.optimizers), (
             "Must pass one optimizer per model part or per param if "
-            "using OptimizersInBackwardContainer."
+            "using OptimizersInBackwardContainer, or one optimizer for all param groups."
         )
 
     def _post_init(
@@ -182,8 +193,9 @@ class FTOptimizersContainer(OptimizersContainer):
         optimizer_kwargs: dict[str, Any],
         ft_manager: "ft.Manager",
         use_ft_optimizer: bool = True,
+        param_groups: list[dict[str, Any]] | None = None,
     ) -> None:
-        super().__init__(model_parts, optimizer_cls, optimizer_kwargs)
+        super().__init__(model_parts, optimizer_cls, optimizer_kwargs, param_groups)
 
         # Force to initialize the optimizer state so that `optim.step()`
         # won't be called by state_dict() and load_state_dict().
@@ -239,6 +251,92 @@ class FTOptimizersContainer(OptimizersContainer):
             super().zero_grad(*args, **kwargs)
 
 
+def get_param_groups(optimizer_config: OptimizerConfig, model: nn.Module) -> list[dict[str, Any]]:
+    """
+    Create parameter groups with different weight decay settings.
+    
+    Args:
+        optimizer_config: Optimizer configuration with weight decay settings
+        model: The model to create parameter groups for
+        
+    Returns:
+        List of parameter groups for the optimizer
+    """
+    # Separate parameters for weight decay
+    decay_params = []
+    no_decay_params = []
+    
+    # Track parameter counts and names for logging
+    decay_count = 0
+    no_decay_count = 0
+    no_decay_names = []
+    
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+            
+        should_decay = True
+        
+        # Check for embedding parameters
+        # This includes both input embeddings (tok_embeddings) and output projection layer (output)
+        # Following the practice from models like OLMo where tied embeddings share weight decay behavior
+        if ("tok_embeddings" in name or "output" in name) and not optimizer_config.wd_embeddings:
+            should_decay = False
+            
+        # Check for RMSNorm parameters (attention_norm, ffn_norm, norm)
+        elif any(norm_name in name for norm_name in ["attention_norm", "ffn_norm", ".norm"]) and not optimizer_config.wd_norm:
+            should_decay = False
+            
+        # Check for QKNorm parameters
+        elif "qk_norm" in name and not optimizer_config.wd_qknorm:
+            should_decay = False
+            
+        if should_decay:
+            decay_params.append(param)
+            decay_count += 1
+        else:
+            no_decay_params.append(param)
+            no_decay_count += 1
+            no_decay_names.append(name)
+    
+    # Log parameter distribution only on rank 0 (debug level)
+    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+        logger.debug(f"Weight decay parameter groups:")
+        logger.debug(f"  - With weight decay: {decay_count} parameters")
+        logger.debug(f"  - Without weight decay: {no_decay_count} parameters")
+        logger.debug(f"  - Settings: wd_embeddings={optimizer_config.wd_embeddings}, wd_norm={optimizer_config.wd_norm}, wd_qknorm={optimizer_config.wd_qknorm}")
+        if no_decay_names:
+            logger.debug(f"  - No decay parameters: {no_decay_names[:10]}{'...' if len(no_decay_names) > 10 else ''}")
+        
+        # Validate that exclusions are working as expected
+        embeddings_found = any("tok_embeddings" in name or "output" in name for name in no_decay_names)
+        norms_found = any(any(norm_name in name for norm_name in ["attention_norm", "ffn_norm", ".norm"]) for name in no_decay_names)
+        qknorm_found = any("qk_norm" in name for name in no_decay_names)
+        
+        if not optimizer_config.wd_embeddings and not embeddings_found:
+            logger.warning("wd_embeddings=False but no embedding/output parameters found to exclude from weight decay")
+        if not optimizer_config.wd_norm and not norms_found:
+            logger.warning("wd_norm=False but no normalization parameters found to exclude from weight decay")
+        if not optimizer_config.wd_qknorm and qknorm_found:
+            # Only warn if QKNorm is actually present in the model
+            logger.warning("wd_qknorm=False but no QKNorm parameters found to exclude from weight decay")
+    
+    # Create parameter groups
+    param_groups = []
+    if decay_params:
+        param_groups.append({
+            "params": decay_params,
+            "weight_decay": optimizer_config.weight_decay,
+        })
+    if no_decay_params:
+        param_groups.append({
+            "params": no_decay_params,
+            "weight_decay": 0.0,
+        })
+    
+    return param_groups
+
+
 def build_optimizers(
     model_parts: list[nn.Module],
     optimizer_config: OptimizerConfig,
@@ -291,14 +389,44 @@ def build_optimizers(
     fused = optim_implementation == "fused"
     foreach = optim_implementation == "foreach"
 
+    # Check if we need to use parameter groups for weight decay exclusion
+    use_param_groups = (
+        not optimizer_config.wd_embeddings or 
+        not optimizer_config.wd_norm or 
+        not optimizer_config.wd_qknorm
+    )
+    
+    # Check for incompatible parallelism configurations
+    if use_param_groups:
+        if parallel_dims.pp_enabled:
+            raise ValueError(
+                "Weight decay exclusion (wd_embeddings=False, wd_norm=False, or wd_qknorm=False) "
+                "is not compatible with Pipeline Parallelism. Please either disable weight decay "
+                "exclusions or use a different parallelism strategy."
+            )
+        if parallel_dims.tp_enabled:
+            logger.warning(
+                "Weight decay exclusion with Tensor Parallelism is experimental and may not work "
+                "correctly. Proceed with caution and verify parameter norms using log_param_norms=True."
+            )
+    
+    # Build base optimizer kwargs
     optimizer_kwargs = {
         "lr": lr,
         "betas": (beta1, beta2),
         "eps": eps,
-        "weight_decay": weight_decay,
         "fused": fused,
         "foreach": foreach,
     }
+    
+    # Parameter groups are only supported for single model (non-PP) and not with optim_in_bwd
+    param_groups = None
+    if use_param_groups and len(model_parts) == 1 and not optim_in_bwd:
+        param_groups = get_param_groups(optimizer_config, model_parts[0])
+        # Don't add weight_decay to optimizer_kwargs when using param groups
+    else:
+        # Add weight_decay when not using parameter groups
+        optimizer_kwargs["weight_decay"] = weight_decay
 
     optimizer_classes = {
         "Adam": torch.optim.Adam,
@@ -309,6 +437,11 @@ def build_optimizers(
     optimizer_cls = optimizer_classes[name]
 
     if optim_in_bwd:
+        if use_param_groups:
+            logger.warning(
+                "Weight decay exclusion is not supported with early_step_in_backward. "
+                "All parameters will use the same weight decay value."
+            )
         return OptimizersInBackwardContainer(
             model_parts, optimizer_cls, optimizer_kwargs
         )
@@ -320,6 +453,7 @@ def build_optimizers(
             optimizer_kwargs,
             ft_manager.manager,
             use_ft_optimizer=ft_manager.use_async_quorum,
+            param_groups=param_groups,
         )
 
-    return OptimizersContainer(model_parts, optimizer_cls, optimizer_kwargs)
+    return OptimizersContainer(model_parts, optimizer_cls, optimizer_kwargs, param_groups)

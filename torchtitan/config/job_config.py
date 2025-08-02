@@ -68,6 +68,12 @@ class Metrics:
 
     enable_wandb: bool = False
     """Whether to log metrics to Weights & Biases"""
+    
+    log_param_norms: bool = False
+    """Whether to log L1/L2 norms for each layer's parameters"""
+    
+    log_param_norms_freq: int = 100
+    """How often to log parameter norms, in iterations (only used if log_param_norms=True)"""
 
 
 @dataclass
@@ -119,6 +125,16 @@ class Optimizer:
 
     weight_decay: float = 0.1
     """Weight decay to use"""
+
+    # Weight decay exclusion parameters
+    wd_embeddings: bool = False
+    """Whether to apply weight decay to embedding parameters (includes both input embeddings and output layer)"""
+    
+    wd_norm: bool = False  
+    """Whether to apply weight decay to normalization layers (RMSNorm)"""
+    
+    wd_qknorm: bool = False
+    """Whether to apply weight decay to QKNorm parameters"""
 
     implementation: Literal["for-loop", "foreach", "fused"] = "fused"
     """
