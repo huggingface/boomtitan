@@ -1,0 +1,94 @@
+# torchtitan Config.toml
+
+[job]
+dump_folder = "./outputs"
+description = "Smollm3 3B debug training"
+print_args = true
+use_for_integration_test = true
+
+[profiling]
+enable_profiling = false
+save_traces_folder = "profile_trace"
+profile_freq = 1000
+enable_memory_snapshot = false
+save_memory_snapshot_folder = "memory_snapshot"
+
+[metrics]
+log_freq = 1
+disable_color_printing = false
+enable_tensorboard = true
+save_tb_folder = "tb"
+enable_wandb = true
+save_for_all_ranks = false
+log_param_norms = true
+log_param_norms_freq = 500  # Log parameter norms every 10 steps
+
+[model]
+name = "boom"
+freq_nope = 4
+use_qk_norm = true
+flavor = "smollm3B"
+tokenizer_path = "./assets/tokenizer/Llama-3.1-8B"
+# converters = ["float8"]
+
+[optimizer]
+name = "AdamW"
+beta_1 = 0.9
+beta_2 = 0.95
+lr = 0.0002
+eps = 1e-8
+optim_implementation = "fused"
+## --
+# Weight decay exclusion settings
+wd_embeddings = false   # Exclude embeddings and output layer from weight decay
+wd_norm = true         # Apply weight decay to normalization layers
+wd_qknorm = true       # Apply weight decay to QKNorm layers (if enabled)
+
+
+[lr_scheduler]
+warmup_steps = 2000  # lr scheduler warm up, normally 20% of the train steps
+decay_ratio = 0  # WSD
+decay_type = "linear"
+min_lr_factor = 0.0
+
+[training]
+local_batch_size = 4
+seq_len = 4096
+max_norm = 1.0  # grad norm clipping
+steps = 4720000
+compile = true
+dataset = "fw-edu-100BT-local"  # supported datasets: c4_test (2K), c4 (177M)
+seed = 6  # for reproducibility
+deterministic = true  # For full determinism (slower but exact reproducibility)
+
+[parallelism]
+data_parallel_replicate_degree = 1
+data_parallel_shard_degree = -1
+fsdp_reshard_after_forward = "default" # default / never / always
+tensor_parallel_degree = 1
+enable_async_tensor_parallel = false
+pipeline_parallel_degree = 1
+context_parallel_degree = 1
+
+[checkpoint]
+enable_checkpoint = false
+folder = "checkpoint"
+interval = 1000
+last_save_model_only = false
+export_dtype = "float32"
+async_mode = "disabled"  # ["disabled", "async", "async_with_pinned_mem"]
+
+[activation_checkpoint]
+mode = "selective"  # ["none", "selective", "full"]
+selective_ac_option = '2'  # 'int' = ac every positive int layer or 'op', ac based on ops policy
+
+[float8]
+enable_fsdp_float8_all_gather = false
+precompute_float8_dynamic_scale_for_fsdp = false
+filter_fqns = ["output"]
+
+[validation]
+enabled = false
+dataset = "c4_validation"
+freq = 5
+steps = 100
