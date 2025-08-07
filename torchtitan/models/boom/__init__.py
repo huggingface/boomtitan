@@ -62,6 +62,18 @@ boom_configs = {
         rope_theta=100000,
         max_seq_len=2048,
     ),
+    "smollm3B": TransformerModelArgs(
+        dim=2048,
+        n_layers=36,
+        n_heads=16,
+        n_kv_heads=4,
+        ffn_dim_multiplier=2.015, # 4*2048*2/3 ~= 11004 --> 11008 (multiple of 256)
+        multiple_of=256,
+        use_flex_attn=True,
+        vocab_size=128256,
+        rope_theta=100000,
+        max_seq_len=4096,
+    ),
     "8B": TransformerModelArgs(
         dim=4096,
         n_layers=32,
