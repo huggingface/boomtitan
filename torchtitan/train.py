@@ -32,6 +32,8 @@ from torchtitan.tools.profiling import (
     maybe_enable_profiling,
 )
 
+import torch.distributed as dist
+
 
 class Trainer(torch.distributed.checkpoint.stateful.Stateful):
     # core configs
@@ -128,6 +130,32 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         )
         self.train_spec = train_spec_module.get_train_spec(job_config.model.name)
 
+        self.loss_fn = self.train_spec.build_loss_fn(job_config)
+
+        # verify batch sizes
+        global_batch_size = job_config.training.global_batch_size
+        if global_batch_size < 0:
+            # This global batch size results in 1 gradient accumulation
+            # step.
+            global_batch_size = job_config.training.local_batch_size * dp_degree
+        assert global_batch_size > 0
+        assert (
+            global_batch_size % (job_config.training.local_batch_size * dp_degree) == 0
+        ), (
+            f"global batch size must be multiple of local batch size times "
+            f"data-parallel degree ({global_batch_size} "
+            f"% ({job_config.training.local_batch_size} * {dp_degree}) != 0)"
+        )
+
+        # calculate gradient accumulation steps
+        self.gradient_accumulation_steps = global_batch_size // (
+            job_config.training.local_batch_size * dp_degree
+        )
+        assert self.gradient_accumulation_steps > 0
+        self.loss_fn = rescale_accumulated_loss(
+            self.loss_fn, self.gradient_accumulation_steps
+        )
+
         # build tokenizer and dataloader
         self.tokenizer = (
             self.train_spec.build_tokenizer_fn(job_config)
@@ -135,12 +163,27 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
             else None
         )
 
-        self.dataloader = self.train_spec.build_dataloader_fn(
-            dp_world_size=dp_degree,
-            dp_rank=dp_rank,
-            tokenizer=self.tokenizer,
-            job_config=job_config,
-        )
+        if self.job_config.data_stages:
+            # Use datatrove dataloader with TokenizedBytesFolderDataset
+            self.dataloader = self.train_spec.build_dataloader_fn(
+                global_batch_size=global_batch_size,
+                micro_batch_size=job_config.training.local_batch_size,
+                job_config=job_config,
+                parallel_dims=parallel_dims, # TODO: meaybe this one should be self.ft_manager (Fault Tolerance)
+                input_pp_rank=0, # TODO
+                output_pp_rank=0,  # TODO
+                consumed_train_samples_stage=0,  # TODO
+                tokenizer=self.tokenizer,
+                current_iteration=self.step if hasattr(self, 'step') else 0,
+            )
+        else:
+            # Use HuggingFace standard dataloader with load_dataset
+            self.dataloader = self.train_spec.build_dataloader_fn(
+                dp_world_size=dp_degree,
+                dp_rank=dp_rank,
+                tokenizer=self.tokenizer,
+                job_config=job_config,
+            )
 
         # build model (using meta init)
         model_args = self.train_spec.model_args[job_config.model.flavor]
@@ -189,32 +232,6 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         else:
             init_device = device_type
             buffer_device = None
-
-        self.loss_fn = self.train_spec.build_loss_fn(job_config)
-
-        # verify batch sizes
-        global_batch_size = job_config.training.global_batch_size
-        if global_batch_size < 0:
-            # This global batch size results in 1 gradient accumulation
-            # step.
-            global_batch_size = job_config.training.local_batch_size * dp_degree
-        assert global_batch_size > 0
-        assert (
-            global_batch_size % (job_config.training.local_batch_size * dp_degree) == 0
-        ), (
-            f"global batch size must be multiple of local batch size times "
-            f"data-parallel degree ({global_batch_size} "
-            f"% ({job_config.training.local_batch_size} * {dp_degree}) != 0)"
-        )
-
-        # calculate gradient accumulation steps
-        self.gradient_accumulation_steps = global_batch_size // (
-            job_config.training.local_batch_size * dp_degree
-        )
-        assert self.gradient_accumulation_steps > 0
-        self.loss_fn = rescale_accumulated_loss(
-            self.loss_fn, self.gradient_accumulation_steps
-        )
 
         # apply parallelisms and initialization
         if parallel_dims.pp_enabled:
@@ -380,8 +397,19 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                 # If data runs out during gradient accumulation, that
                 # entire step will not be executed.
                 raise DataloaderStopIteration() from ex
-            input_dict, labels = batch
-            ntokens_batch = labels.numel()
+
+            # Handle different dataloader formats
+            if isinstance(batch, dict):
+                # Single dict format from datadrove: {input_ids, position_ids, label_ids, label_mask}
+                input_dict = {k: v for k, v in batch.items() if k != 'label_ids'}
+                labels = batch['label_ids']
+            else:
+                # Tuple format: (input_dict, labels)
+                input_dict, labels = batch
+
+            ntokens_batch = labels.size
+
+            ntokens_batch = labels.numel() if isinstance(labels, torch.Tensor) else labels.size
             self.ntokens_seen += ntokens_batch
             self.metrics_processor.ntokens_since_last_log += ntokens_batch
             self.metrics_processor.data_loading_times.append(
@@ -390,9 +418,17 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
 
             # Move tensors to the appropriate device
             for k, v in input_dict.items():
+                # DataCollatorForCLMWithPositionIds returns numpy arrays
                 if isinstance(v, torch.Tensor):
                     input_dict[k] = v.to(device_type)
-            labels = labels.to(device_type)
+                else:
+                    input_dict[k] = torch.from_numpy(v).to(device_type)
+
+            if isinstance(labels, torch.Tensor):
+                labels = labels.to(device_type)
+            else:
+                # Convert NumPy array to PyTorch tensor
+                labels = torch.from_numpy(labels).to(device_type)
 
             yield input_dict, labels
 
@@ -404,7 +440,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
 
         # apply context parallelism if cp is enabled
         # ensure CP handles the separate freqs_cis buffer for each pp stage
-        inputs = input_dict["input"]
+        inputs = input_dict.get("input") or input_dict.get("input_ids")
         optional_context_parallel_ctx = (
             dist_utils.create_context_parallel_ctx(
                 cp_mesh=parallel_dims.world_mesh["cp"],
@@ -455,14 +491,14 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
     def _compute_param_norms(self) -> dict[str, float]:
         """Compute L1 and L2 norms for each layer's parameters."""
         param_norms = {}
-        
+
         for model in self.model_parts:
             for name, param in model.named_parameters():
                 if param.requires_grad and param.data is not None:
                     # Compute L1 and L2 norms
                     l1_norm = param.data.abs().sum().item()
                     l2_norm = param.data.norm(2).item()
-                    
+
                     # Parse the parameter name to create a structured metric name
                     if "tok_embeddings" in name:
                         # Embedding layer
@@ -475,13 +511,13 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                         parts = name.split(".")
                         layer_idx = None
                         component = None
-                        
+
                         # Find layer index
                         for i, part in enumerate(parts):
                             if part == "layers" and i + 1 < len(parts):
                                 layer_idx = int(parts[i + 1]) + 1  # Add 1 so layer 0 becomes layer 1
                                 remaining = ".".join(parts[i + 2:])
-                                
+
                                 # Identify component type
                                 if "attention.wq" in remaining:
                                     component = "attn_q"
@@ -506,7 +542,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                                 elif "qk_norm.key_norm" in remaining:
                                     component = "qk_norm_k"
                                 break
-                        
+
                         if layer_idx is not None and component is not None:
                             metric_base = f"param_norms/layer_{layer_idx}/{component}"
                         else:
@@ -518,11 +554,11 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                             metric_base = "param_norms/final_norm/weight"
                         else:
                             metric_base = f"param_norms/other/{name.replace('.', '_')}"
-                    
+
                     # Add L1 and L2 norms
                     param_norms[f"{metric_base}/l1"] = l1_norm
                     param_norms[f"{metric_base}/l2"] = l2_norm
-        
+
         return param_norms
 
     def train_step(
@@ -582,13 +618,13 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
             "n_tokens_seen": self.ntokens_seen,
             "lr": lr,
         }
-        
+
         # Compute parameter norms for weight decay monitoring if enabled
-        if (self.job_config.metrics.log_param_norms and 
+        if (self.job_config.metrics.log_param_norms and
             self.step % self.job_config.metrics.log_param_norms_freq == 0):
             param_norms = self._compute_param_norms()
             extra_metrics.update(param_norms)
-        
+
         self.metrics_processor.log(
             self.step,
             global_avg_loss,
