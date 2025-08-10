@@ -4,9 +4,13 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import os
+import glob
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Optional, Union, List
 
+
+DEFAULT_SEED = 42
 
 @dataclass
 class Job:
@@ -68,10 +72,10 @@ class Metrics:
 
     enable_wandb: bool = False
     """Whether to log metrics to Weights & Biases"""
-    
+
     log_param_norms: bool = False
     """Whether to log L1/L2 norms for each layer's parameters"""
-    
+
     log_param_norms_freq: int = 100
     """How often to log parameter norms, in iterations (only used if log_param_norms=True)"""
 
@@ -138,10 +142,10 @@ class Optimizer:
     # Weight decay exclusion parameters
     wd_embeddings: bool = False
     """Whether to apply weight decay to embedding parameters (includes both input embeddings and output layer)"""
-    
-    wd_norm: bool = False  
+
+    wd_norm: bool = False
     """Whether to apply weight decay to normalization layers (RMSNorm)"""
-    
+
     wd_qknorm: bool = False
     """Whether to apply weight decay to QKNorm parameters"""
 
@@ -768,6 +772,123 @@ class Validation:
 
 
 @dataclass
+class PretrainDatasetsArgs:
+    hf_dataset_or_datasets: Union[str, list, dict]
+    hf_dataset_splits: Optional[Union[str, list]] = None
+    hf_dataset_config_name: Optional[str] = None
+    dataset_processing_num_proc_per_process: Optional[int] = 1
+    dataset_overwrite_cache: Optional[bool] = False
+    text_column_name: Optional[str] = None
+
+    def __post_init__(self):
+        if self.text_column_name is None:
+            self.text_column_name = "text"
+        if self.hf_dataset_splits is None:
+            self.hf_dataset_splits = "train"
+
+
+@dataclass
+class SFTDatasetsArgs:
+    # TODO @nouamane: which config do we want for SFT?
+    hf_dataset_or_datasets: Union[str, list, dict]
+    hf_dataset_splits: Optional[Union[str, list]] = None
+    hf_dataset_config_name: Optional[str] = None
+    dataset_processing_num_proc_per_process: Optional[int] = 1
+    dataset_overwrite_cache: Optional[bool] = False
+    sft_dataloader: Optional[bool] = True
+    debug_max_samples: Optional[int] = None
+
+    def __post_init__(self):
+        if self.hf_dataset_splits is None:
+            self.hf_dataset_splits = "train"
+
+
+@dataclass
+class TokenizedBytesDatasetArgs:
+    dataset_folder: Union[str, List[str]]
+    dataset_weights: Optional[List[float]] = None
+    dataset_read_path: Optional[
+        Union[str, List[str]]
+    ] = None  # Path to local file/copy to read from. If it exists, we read from this folder instead of from dataset_folder. Useful when we offload some data to remote and only keep the needed files on disk.
+    # Tokenizer config, assuming all datasets use the same tokenizer
+    tokenizer_name: Optional[str] = None
+    vocab_size: Optional[int] = None
+    token_size_in_bytes: Optional[int] = None
+    # read positions stored in disk by datatrove if eos_token_id is None, else computed on the fly
+    return_positions: Optional[bool] = True
+
+    # Tokenized bytes dataset config
+    skip_in_stream: Optional[bool] = False
+    pad_samples_to_global_batch_size: Optional[bool] = False
+    dataset_max_tokens: Optional[List[int]] = None
+    shuffle_files: bool = False
+    use_old_brrr_dataloader: Optional[bool] = False
+
+    def __post_init__(self):
+        if isinstance(self.dataset_folder, str):  # Case 1: 1 Dataset folder
+            self.dataset_folder = [self.dataset_folder]
+            self.dataset_weights = [1]
+
+        # Check if dataset_weights is provided and matches the number of dataset folders
+        if self.dataset_weights is not None and len(self.dataset_weights) != len(self.dataset_folder):
+            raise ValueError(
+                f"Number of dataset weights ({len(self.dataset_weights)}) does not match number of dataset folders ({len(self.dataset_folder)})"
+            )
+
+        # Read the first metadata file in the dataset folder to extract tokenizer name and token size.
+        for folder in self.dataset_folder:
+            # Find all metadata files in the folder
+            metadata_files = glob.glob(os.path.join(folder, "*.metadata"))
+            if metadata_files:
+                # Read the first line of the first metadata file
+                with open(metadata_files[0], "r") as f:
+                    first_line = f.readline().strip()
+                    if "|" in first_line:
+                        tokenizer_name, token_size_in_bytes = first_line.split("|")
+                        if self.tokenizer_name is None:
+                            self.tokenizer_name = tokenizer_name
+                            self.token_size_in_bytes = int(token_size_in_bytes)
+                            # self.vocab_size = len(AutoTokenizer.from_pretrained(tokenizer_name).get_vocab())
+                        else:
+                            assert (
+                                self.tokenizer_name == tokenizer_name
+                            ), f"Tokenizer name mismatch while reading datasets metadata file, found both {self.tokenizer_name} and {tokenizer_name}"
+                            assert self.token_size_in_bytes == int(
+                                token_size_in_bytes
+                            ), f"Token size mismatch while reading datasets metadata file, found both {self.token_size_in_bytes} and {token_size_in_bytes}"
+
+        # Check if dataset_read_path is provided and matches the number of dataset folders
+        if self.dataset_read_path is not None and len(self.dataset_read_path) != len(self.dataset_folder):
+            raise ValueError(
+                f"Number of dataset read paths ({len(self.dataset_read_path)}) does not match number of dataset folders ({len(self.dataset_folder)})"
+            )
+
+@dataclass
+class DataArgs:
+    """Arguments related to the data and data files processing"""
+
+    dataset: TokenizedBytesDatasetArgs
+    seed: Optional[int] = DEFAULT_SEED
+    num_loading_workers: Optional[int] = 1
+
+    def __post_init__(self):
+        if self.seed is None:
+            self.seed = DEFAULT_SEED
+
+@dataclass
+class DatasetStageArgs:
+    """Arguments for loading dataset in different stages of the training process"""
+
+    name: str = "train"
+    start_training_step: int = 1
+    data: DataArgs = None
+    sequence_length: Optional[int] = None # if None, we use the sequence length from the config
+
+    def __post_init__(self):
+        if self.start_training_step < 0:
+            raise ValueError(f"training_steps should be a positive integer and not {self.start_training_step}")
+
+@dataclass
 class JobConfig:
     """
     Default container for training configuration.
@@ -792,6 +913,7 @@ class JobConfig:
     fault_tolerance: FaultTolerance = field(default_factory=FaultTolerance)
     experimental: Experimental = field(default_factory=Experimental)
     validation: Validation = field(default_factory=Validation)
+    data_stages: DatasetStageArgs = field(default_factory=DatasetStageArgs)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

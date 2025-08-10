@@ -9,9 +9,10 @@
 import pickle
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Dict, Iterable, List, Optional, TypeVar, Union
 
 from torch.distributed.checkpoint.stateful import Stateful
+from torch.utils.data import Sampler
 from torch.utils.data import IterableDataset
 from torchdata.stateful_dataloader import StatefulDataLoader
 from torchtitan.tools.logging import logger
@@ -59,13 +60,23 @@ class ParallelAwareDataloader(StatefulDataLoader, BaseDataLoader):
         dataset: IterableDataset,
         dp_rank: int,
         dp_world_size: int,
-        batch_size: int,
+        batch_size: int | None = None,
+        batch_sampler: Union[Sampler[List], Iterable[List], None] = None,
+        num_workers: int = 0,
         collate_fn: Callable | None = None,
+        pin_memory: bool = False,
+        worker_init_fn: Callable | None = None,
     ):
         self.dp_world_size = dp_world_size
         self.dp_rank = dp_rank
         self.batch_size = batch_size
-        super().__init__(dataset, batch_size, collate_fn=collate_fn)
+        super().__init__(dataset,
+                         batch_size,
+                         batch_sampler=batch_sampler,
+                         num_workers=num_workers,
+                         collate_fn=collate_fn,
+                         pin_memory=pin_memory,
+                         worker_init_fn=worker_init_fn)
         self._rank_id = f"dp_rank_{dp_rank}"
 
     def state_dict(self) -> dict[str, Any]:
