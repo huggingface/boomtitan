@@ -14,12 +14,12 @@ from typing import List, Optional, Union, Dict, Any
 from fsspec.core import url_to_fs
 from torch.utils.data import DataLoader
 
-from datatrove.utils.dataset import DatatroveFolderDataset
 from torch.utils.data import DataLoader, Dataset
 
 from torchtitan.tools.logging import logger
 from torchtitan.distributed import ParallelDims
 from torchtitan.datasets.clm_collator import DataCollatorForCLM, DataCollatorForCLMWithPositionIds
+from torchtitan.datasets.datatrove_dataset import DatatroveFolderDataset
 from torchtitan.components.dataloader import ParallelAwareDataloader
 from torchdata.stateful_dataloader import StatefulDataLoader
 from contextlib import contextmanager
