@@ -54,10 +54,10 @@ class TransformerModelArgs(BaseModelArgs):
         if (
             job_config.parallelism.pipeline_parallel_degree > 1
             and self.use_flex_attn
-            and self.attn_mask_type == "block_causal"
+            and self.attn_mask_type in ["block_causal", "document_causal"]
         ):
             raise RuntimeError(
-                "PP + block causal FlexAttention support will be fixed soon."
+                "PP + block/document causal FlexAttention support will be fixed soon."
             )
         self.max_seq_len = seq_len
 
@@ -77,6 +77,14 @@ class TransformerModelArgs(BaseModelArgs):
         # Handle use_qk_norm parameter
         if hasattr(job_config.model, "use_qk_norm"):
             self.use_qk_norm = job_config.model.use_qk_norm
+            
+        # Handle FlexAttention parameters
+        if hasattr(job_config.model, "use_flex_attn"):
+            self.use_flex_attn = job_config.model.use_flex_attn
+        if hasattr(job_config.model, "attn_mask_type"):
+            self.attn_mask_type = job_config.model.attn_mask_type
+        if hasattr(job_config.model, "eos_id"):
+            self.eos_id = job_config.model.eos_id
 
     def get_nparams_and_flops(self, model: nn.Module, seq_len: int) -> tuple[int, int]:
         nparams = sum(p.numel() for p in model.parameters())
