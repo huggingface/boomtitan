@@ -110,13 +110,13 @@ class Model:
 
     freq_nope: int | None = None
     """Frequency for disabling RoPE (every Nth layer). If None, RoPE is used in all layers"""
-    
+
     use_flex_attn: bool = False
     """Whether to use FlexAttention instead of standard SDPA"""
-    
+
     attn_mask_type: str = "causal"
     """Type of attention mask: 'causal', 'block_causal', or 'document_causal'"""
-    
+
     eos_id: int = 0
     """End of sequence token ID used for document/block boundaries"""
 
@@ -913,7 +913,52 @@ class JobConfig:
     fault_tolerance: FaultTolerance = field(default_factory=FaultTolerance)
     experimental: Experimental = field(default_factory=Experimental)
     validation: Validation = field(default_factory=Validation)
-    data_stages: DatasetStageArgs = field(default_factory=DatasetStageArgs)
+    data_stages: list[DatasetStageArgs] = field(default_factory=list)
+
+    # MC: series of hacks because for some reason nested dataclasses don't work with lists
+    # (or I don't know how to make it work otherwise)
+    def __post_init__(self):
+        """Convert dict data_stages to DatasetStageArgs objects if needed."""
+        if self.data_stages and isinstance(self.data_stages[0], dict):
+            self.data_stages = [
+                self._convert_to_dataset_stage_args(stage) if isinstance(stage, dict) else stage
+                for stage in self.data_stages
+            ]
+
+    @staticmethod
+    def _convert_to_dataset_stage_args(stage_dict: dict) -> "DatasetStageArgs":
+        """Convert nested dict to DatasetStageArgs with proper nested object conversion."""
+        # Convert nested data field if it exists
+        if "data" in stage_dict and isinstance(stage_dict["data"], dict):
+            data_dict = stage_dict["data"]
+
+            # Convert nested dataset field if it exists
+            if "dataset" in data_dict and isinstance(data_dict["dataset"], dict):
+                print(data_dict["dataset"])
+                data_dict["dataset"] = TokenizedBytesDatasetArgs(**data_dict["dataset"])
+
+            stage_dict["data"] = DataArgs(**data_dict)
+
+        return DatasetStageArgs(**stage_dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "JobConfig":
+        """Create JobConfig from dict, handling data_stages conversion."""
+        # Handle data_stages conversion with nested objects
+        if "data_stages" in data and data["data_stages"]:
+            data["data_stages"] = [
+                cls._convert_to_dataset_stage_args(stage) if isinstance(stage, dict) else stage
+                for stage in data["data_stages"]
+            ]
+
+        # Convert other nested dicts to their respective classes
+        for field_name, field_def in cls.__dataclass_fields__.items():
+            if field_name in data and field_name != "data_stages":
+                field_type = field_def.type
+                if hasattr(field_type, '__dataclass_fields__') and isinstance(data[field_name], dict):
+                    data[field_name] = field_type(**data[field_name])
+
+        return cls(**data)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

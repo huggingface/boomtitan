@@ -250,40 +250,39 @@ def build_tb_dataloader(
     global_batch_size,
     micro_batch_size,
     job_config: JobConfig,
+    stage_args_data,
     parallel_dims,
     input_pp_rank: int,
     output_pp_rank: int,
     consumed_train_samples_stage: int,
+    consumed_tokens_per_dataset_folder: int,
+    last_stages_consumed_tokens_per_dataset_folder: int,
     tokenizer: BaseTokenizer,
     current_iteration=0,
 ) -> ParallelAwareDataloader:
-    """Build a tokenized bytes dataloader."""
-
-    # TODO: (MC) not sure if data_stages should be a list of stages or not
-    data = job_config.data_stages.data
+    """Build a tokenized bytes data~loader."""
 
     train_dataset = get_tb_datasets(
-        data_config=data.dataset,
+        data_config=stage_args_data.dataset,
         global_batch_size=global_batch_size,
         sequence_length=job_config.training.seq_len,
         train_steps=job_config.training.steps,
         current_iteration=current_iteration,
         parallel_dims=parallel_dims,
-        shuffle=data.dataset.shuffle_files,
+        shuffle=stage_args_data.dataset.shuffle_files,
         eos_token_id=tokenizer.eos_id,
-        seed=data.seed,
+        seed=stage_args_data.seed,
         consumed_samples=consumed_train_samples_stage,
-        # TODO: (MC) not sure how to handle this
-        # consumed_tokens_per_dataset_folder=consumed_tokens_per_dataset_folder,
-        # last_stages_consumed_tokens_per_dataset_folder=last_stages_consumed_tokens_per_dataset_folder,
+        consumed_tokens_per_dataset_folder=consumed_tokens_per_dataset_folder,
+        last_stages_consumed_tokens_per_dataset_folder=last_stages_consumed_tokens_per_dataset_folder,
     )
     dataloader = get_tb_dataloader(
         dataset=train_dataset,
         sequence_length=job_config.training.seq_len,
         micro_batch_size=micro_batch_size,
         global_batch_size=global_batch_size,
-        num_workers=data.num_loading_workers,
-        cfg=data.dataset,
+        num_workers=stage_args_data.num_loading_workers,
+        cfg=stage_args_data.dataset,
         consumed_samples=consumed_train_samples_stage,
         num_samples=job_config.training.steps * global_batch_size, # TODO: this overshoots what's needed by the current stage, but it doesnt matter?
         parallel_dims=parallel_dims,

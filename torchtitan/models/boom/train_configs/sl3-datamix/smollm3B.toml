@@ -23,9 +23,21 @@ save_for_all_ranks = false
 log_param_norms = true
 log_param_norms_freq = 500  # Log parameter norms every 500 steps
 
-[data_stages]
+[[data_stages]]
+  name = "stable"
+  start_training_step = 1
+
   [data_stages.data]
+    num_loading_workers = 0
+    seed = 6
+
     [data_stages.data.dataset]
+      pad_samples_to_global_batch_size = false
+      return_positions = true
+      token_size_in_bytes = 4
+      tokenizer_name = "meta-llama/Llama-3.2-1B"
+      use_old_brrr_dataloader = false
+      vocab_size = 128256
       dataset_read_path = [
         "./data/SL3_2.6TT/fineweb-edu/",
         "./data/SL3_2.6TT/dclm/",
@@ -161,26 +173,16 @@ log_param_norms_freq = 500  # Log parameter norms every 500 steps
         0.00322,
       ]
 
-      pad_samples_to_global_batch_size = false
-      return_positions = true
-      token_size_in_bytes = 4
-      tokenizer_name = "meta-llama/Llama-3.2-1B"
-      use_old_brrr_dataloader = false
-      vocab_size = 128256
-
-    num_loading_workers = 0
-    seed = 6
-
-  name = "stable"
-  start_training_step = 1
-
 [model]
 name = "boom"
 freq_nope = 4
 use_qk_norm = true
 flavor = "smollm3B"
-tokenizer_path = "./assets/tokenizer/Llama-3.1-8B"
+tokenizer_path = "./assets/tokenizer/Llama-3.2-1B"
 # converters = ["float8"]
+use_flex_attn = true
+attn_mask_type = "document_causal"
+eos_id = 128001  # Adjust based on your tokenizer's EOS token ID
 
 [optimizer]
 name = "AdamW"
