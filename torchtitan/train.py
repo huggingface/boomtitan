@@ -446,11 +446,23 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                 with self.maybe_enable_amp:
                     pred = model_parts[0](inputs, eos_id=self.tokenizer.eos_id)
                     loss = self.loss_fn(pred, labels)
+                    
+                    # Store z-loss attributes before backward (they might be lost after)
+                    loss_for_logging = loss.detach()
+                    if hasattr(loss, 'z_loss'):
+                        loss_for_logging.z_loss = loss.z_loss
+                        loss_for_logging.z_loss_unweighted = loss.z_loss_unweighted
+                        loss_for_logging.ce_loss = loss.ce_loss
+                    
                 # need to free to before bwd to avoid peaking memory
                 del pred
                 loss.backward()
 
-        return loss
+        # Return loss with preserved attributes for logging
+        if parallel_dims.pp_enabled:
+            return loss
+        else:
+            return loss_for_logging
 
     def _compute_param_norms(self) -> dict[str, float]:
         """Compute L1 and L2 norms for each layer's parameters."""
@@ -537,12 +549,19 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         parallel_dims = self.parallel_dims
 
         accumulated_losses = []
+        accumulated_z_losses = []  # Track z-loss separately
+        accumulated_z_losses_unweighted = []  # Track unweighted z-loss
         # If data runs out during gradient accumulation, that
         # entire step will not be executed.
         for microbatch in range(self.gradient_accumulation_steps):
             input_dict, labels = next(data_iterator)
             loss = self.forward_backward_step(input_dict, labels)
             accumulated_losses.append(loss.detach())
+            
+            # Extract z-loss components if they exist
+            if hasattr(loss, 'z_loss'):
+                accumulated_z_losses.append(loss.z_loss)
+                accumulated_z_losses_unweighted.append(loss.z_loss_unweighted)
 
         grad_norm = dist_utils.clip_grad_norm_(
             [p for m in self.model_parts for p in m.parameters()],
@@ -563,6 +582,11 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
 
         # Reduce the data collected over gradient accumulation steps.
         loss = torch.sum(torch.stack(accumulated_losses))
+        z_loss_avg = None
+        z_loss_unweighted_avg = None
+        if accumulated_z_losses:
+            z_loss_avg = torch.mean(torch.stack(accumulated_z_losses))
+            z_loss_unweighted_avg = torch.mean(torch.stack(accumulated_z_losses_unweighted))
 
         # log metrics
         if not self.metrics_processor.should_log(self.step):
@@ -575,13 +599,27 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                 dist_utils.dist_mean(loss, parallel_dims.world_mesh["dp_cp"], ft_pg),
                 dist_utils.dist_max(loss, parallel_dims.world_mesh["dp_cp"], ft_pg),
             )
+            # Also reduce z-loss metrics if they exist
+            if z_loss_avg is not None:
+                global_z_loss = dist_utils.dist_mean(z_loss_avg, parallel_dims.world_mesh["dp_cp"], ft_pg)
+                global_z_loss_unweighted = dist_utils.dist_mean(z_loss_unweighted_avg, parallel_dims.world_mesh["dp_cp"], ft_pg)
+            else:
+                global_z_loss = None
+                global_z_loss_unweighted = None
         else:
             global_avg_loss = global_max_loss = loss.detach().item()
+            global_z_loss = z_loss_avg.item() if z_loss_avg is not None else None
+            global_z_loss_unweighted = z_loss_unweighted_avg.item() if z_loss_unweighted_avg is not None else None
 
         extra_metrics = {
             "n_tokens_seen": self.ntokens_seen,
             "lr": lr,
         }
+        
+        # Add z-loss metrics if available
+        if global_z_loss is not None:
+            extra_metrics["z_loss"] = global_z_loss
+            extra_metrics["z_loss_unweighted"] = global_z_loss_unweighted
         
         # Compute parameter norms for weight decay monitoring if enabled
         if (self.job_config.metrics.log_param_norms and 

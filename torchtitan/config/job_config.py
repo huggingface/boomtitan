@@ -261,6 +261,13 @@ class Training:
     deterministic: bool = False
     """Use deterministic algorithms wherever possible, may be slower"""
 
+    z_loss_weight: float = 0.0
+    """
+    Weight for z-loss regularization term (0 to disable, typically 1e-4).
+    Z-loss helps stabilize training by encouraging the log normalizer to stay close to 0.
+    Used in large language models like PaLM for improved training stability.
+    """
+
 
 @dataclass
 class Parallelism:
