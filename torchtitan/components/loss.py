@@ -18,8 +18,9 @@ LossFunction: TypeAlias = Callable[..., torch.Tensor]
 def cross_entropy_loss(
     pred: torch.Tensor, 
     labels: torch.Tensor,
-    z_loss_weight: float = 0.0
-) -> torch.Tensor:
+    z_loss_weight: float = 0.0,
+    return_z_loss: bool = False
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """
     Cross-entropy loss function with optional z-loss regularization.
     
@@ -30,9 +31,11 @@ def cross_entropy_loss(
         pred: Model predictions of shape [batch_size, seq_len, vocab_size]
         labels: Target labels of shape [batch_size, seq_len]
         z_loss_weight: Weight for the z-loss term (0 to disable, typically 1e-4)
+        return_z_loss: If True and z_loss_weight > 0, returns (total_loss, z_loss_unweighted)
     
     Returns:
-        Cross-entropy loss, optionally with z-loss added
+        If return_z_loss is False or z_loss_weight is 0: returns total loss
+        If return_z_loss is True and z_loss_weight > 0: returns (total_loss, z_loss_unweighted)
     """
     # Flatten predictions and labels for cross-entropy computation
     pred_flat = pred.flatten(0, 1).float()
@@ -43,19 +46,16 @@ def cross_entropy_loss(
     
     if z_loss_weight > 0:
         # Compute z-loss: z_loss_weight * log(Z)^2 where Z is the partition function
-        # log(Z) = log(sum(exp(logits))) = logsumexp(logits)
-        log_z = torch.logsumexp(pred_flat, dim=-1)  # Shape: [batch_size * seq_len]
-        z_loss = z_loss_weight * torch.square(log_z).mean()
+        log_z = torch.logsumexp(pred_flat, dim=-1)
+        z_loss_unweighted = torch.square(log_z).mean()
+        total_loss = ce_loss + z_loss_weight * z_loss_unweighted
         
-        # Store z-loss value for logging (without weight for clearer monitoring)
-        total_loss = ce_loss + z_loss
-        # Attach z-loss components as attributes for logging
-        total_loss.ce_loss = ce_loss.detach()
-        total_loss.z_loss = z_loss.detach()
-        total_loss.z_loss_unweighted = torch.square(log_z).mean().detach()
-        
+        if return_z_loss:
+            return total_loss, z_loss_unweighted
         return total_loss
     
+    if return_z_loss:
+        return ce_loss, torch.tensor(0.0, device=ce_loss.device)
     return ce_loss
 
 
@@ -71,7 +71,8 @@ def build_cross_entropy_loss(job_config: JobConfig):
                     "Please set --parallelism.disable_loss_parallel=true to use z-loss."
                 )
         logger.info(f"Using cross-entropy loss with z-loss (weight={z_loss_weight})")
-        loss_fn = functools.partial(cross_entropy_loss, z_loss_weight=z_loss_weight)
+        # Return z-loss for logging when enabled
+        loss_fn = functools.partial(cross_entropy_loss, z_loss_weight=z_loss_weight, return_z_loss=True)
     else:
         loss_fn = cross_entropy_loss
     
@@ -88,15 +89,13 @@ def rescale_accumulated_loss(unwrapped_loss_fn, accumulation_steps):
 
     @functools.wraps(unwrapped_loss_fn)
     def accumulated_loss_fn(*args, **kwargs):
-        loss = unwrapped_loss_fn(*args, **kwargs)
-        scaled_loss = loss / accumulation_steps
+        result = unwrapped_loss_fn(*args, **kwargs)
         
-        # Preserve z-loss attributes if they exist
-        if hasattr(loss, 'z_loss'):
-            scaled_loss.z_loss = loss.z_loss / accumulation_steps
-            scaled_loss.z_loss_unweighted = loss.z_loss_unweighted
-            scaled_loss.ce_loss = loss.ce_loss / accumulation_steps
-        
-        return scaled_loss
+        # Handle tuple return for z-loss
+        if isinstance(result, tuple):
+            loss, z_loss = result
+            return loss / accumulation_steps, z_loss
+        else:
+            return result / accumulation_steps
 
     return accumulated_loss_fn
