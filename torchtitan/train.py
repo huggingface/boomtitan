@@ -921,9 +921,10 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
 
 
 if __name__ == "__main__":
-    init_logger()
     config_manager = ConfigManager()
     config = config_manager.parse_args()
+    os.makedirs(config.job.dump_folder, exist_ok=True)
+    init_logger(Path(config.job.dump_folder) / "train.log")
     trainer: Optional[Trainer] = None
 
     try:
