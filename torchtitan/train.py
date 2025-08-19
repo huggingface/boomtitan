@@ -12,6 +12,7 @@ from typing import Any, Generator, Iterable, Optional
 
 import torch
 from torch.distributed.elastic.multiprocessing.errors import record
+from torch.utils.data import DataLoader
 
 import torchtitan.protocols.train_spec as train_spec_module
 from torchtitan.components.checkpoint import CheckpointManager
@@ -31,6 +32,85 @@ from torchtitan.tools.profiling import (
     maybe_enable_memory_snapshot,
     maybe_enable_profiling,
 )
+
+import torch.distributed as dist
+from pathlib import Path
+from pprint import pformat
+
+import dataclasses
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple, Type, Union
+from collections import defaultdict
+
+@dataclasses.dataclass
+class DataStageMetadata:
+    """
+    consumed_train_samples: The number of samples consumed by the model in the this stage (resets at each stage).
+    consumed_tokens_per_dataset_folder: The number of tokens consumed by the model in the this stage for each dataset folder. (resets at each stage)
+    """
+
+    name: str
+    start_training_step: int
+    consumed_train_samples: int # We use this for sampler, and it's reset at each stage
+    sequence_length: Optional[int] = None # TODO: put back as non-optional
+    consumed_tokens_per_dataset_folder: Dict[str, int] = dataclasses.field(default_factory=dict) # this gets reset at each stage
+
+    def __post_init__(self):
+        if self.sequence_length is None:
+            self.sequence_length = 4096 # TODO: temp
+
+    def sanity_consumed_train_samples(self):
+        assert self.consumed_train_samples*self.sequence_length == sum(self.consumed_tokens_per_dataset_folder.values()), \
+            f"Mismatch between the total consumed samples and the sum of consumed samples across dataset folders! consumed_train_samples={self.consumed_train_samples}, sequence_length={self.sequence_length}, consumed_tokens_per_dataset_folder={self.consumed_tokens_per_dataset_folder}"
+
+    @property
+    def consumed_tokens_all_datasets(self):
+        return sum(self.consumed_tokens_per_dataset_folder.values())
+
+
+@dataclasses.dataclass
+class TrainingMetadata:
+    """
+    consumed_train_samples: The number of samples consumed globally, across all stages.
+    last_train_step: The last training step across all stages.
+    last_stage_idx: The index of the last stage that was trained.
+    data_stages: The metadata for each stage.
+    """
+
+    consumed_train_samples: int # TODO: Legacy. This assumed same sequence length across all stages. Not used anymore
+    last_train_step: int
+    consumed_tokens_total: Optional[int] = None # TODO: put back as non-optional
+
+    # TODO(xrsrke): make this not optional, once we entirely remove
+    # the old checkpoint version
+    last_stage_idx: Optional[int] = None
+    data_stages: Optional[List[DataStageMetadata]] = None
+
+    def __post_init__(self):
+        # NOTE: this is a sanity check after loading a trained checkpoint
+        assert (
+            self.consumed_train_samples == sum(stage.consumed_train_samples for stage in self.data_stages)
+        ), "Mismatch between the total consumed samples and the sum of consumed samples across stages! Something went wrong in the training."
+
+        if self.consumed_tokens_total is not None:
+            assert self.consumed_tokens_total == sum(stage.consumed_tokens_all_datasets for stage in self.data_stages), "Mismatch between the total consumed tokens and the sum of consumed tokens across stages! Something went wrong in the training."
+        else:
+            self.consumed_tokens_total = sum(stage.consumed_tokens_all_datasets for stage in self.data_stages)
+
+        # TODO(xrsrke): remove this once we entirely remove non-data-stage training
+        if self.last_stage_idx is not None:
+            assert self.data_stages is not None, "data_stages should not be None if last_stage_idx is not None"
+
+    @property
+    def consumed_tokens_per_dataset_folder_total(self):
+        consumed = defaultdict(int)
+        for stage in self.data_stages:
+            for dataset_folder, tokens in stage.consumed_tokens_per_dataset_folder.items():
+                consumed[dataset_folder] += tokens
+        return consumed
+
+    @property
+    def current_stage(self) -> DataStageMetadata:
+        return self.data_stages[self.last_stage_idx]
 
 
 class Trainer(torch.distributed.checkpoint.stateful.Stateful):
@@ -64,6 +144,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
     # additional training states
     step: int
     ntokens_seen: int
+    metadata: TrainingMetadata
 
     # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
     @record
@@ -128,6 +209,31 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         )
         self.train_spec = train_spec_module.get_train_spec(job_config.model.name)
 
+        self.loss_fn = self.train_spec.build_loss_fn(job_config)
+
+        # verify batch sizes
+        self.global_batch_size = job_config.training.global_batch_size
+        if self.global_batch_size < 0:
+            # This global batch size results in 1 gradient accumulation step.
+            self.global_batch_size = job_config.training.local_batch_size * dp_degree
+        assert self.global_batch_size > 0
+        assert (
+            self.global_batch_size % (job_config.training.local_batch_size * dp_degree) == 0
+        ), (
+            f"global batch size must be multiple of local batch size times "
+            f"data-parallel degree ({self.global_batch_size} "
+            f"% ({job_config.training.local_batch_size} * {dp_degree}) != 0)"
+        )
+
+        # calculate gradient accumulation steps
+        self.gradient_accumulation_steps = self.global_batch_size // (
+            job_config.training.local_batch_size * dp_degree
+        )
+        assert self.gradient_accumulation_steps > 0
+        self.loss_fn = rescale_accumulated_loss(
+            self.loss_fn, self.gradient_accumulation_steps
+        )
+
         # build tokenizer and dataloader
         self.tokenizer = (
             self.train_spec.build_tokenizer_fn(job_config)
@@ -135,12 +241,17 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
             else None
         )
 
-        self.dataloader = self.train_spec.build_dataloader_fn(
-            dp_world_size=dp_degree,
-            dp_rank=dp_rank,
-            tokenizer=self.tokenizer,
-            job_config=job_config,
-        )
+        if not job_config.data_stages:
+            logger.info("Creating HF stateful dataloader...")
+            # Use HuggingFace standard dataloader with load_dataset
+            self.dataloader = self.train_spec.build_dataloader_fn(
+                dp_world_size=dp_degree,
+                dp_rank=dp_rank,
+                tokenizer=self.tokenizer,
+                job_config=job_config,
+            )
+        else:
+            self.dataloader = None
 
         # build model (using meta init)
         model_args = self.train_spec.model_args[job_config.model.flavor]
@@ -189,32 +300,6 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         else:
             init_device = device_type
             buffer_device = None
-
-        self.loss_fn = self.train_spec.build_loss_fn(job_config)
-
-        # verify batch sizes
-        global_batch_size = job_config.training.global_batch_size
-        if global_batch_size < 0:
-            # This global batch size results in 1 gradient accumulation
-            # step.
-            global_batch_size = job_config.training.local_batch_size * dp_degree
-        assert global_batch_size > 0
-        assert (
-            global_batch_size % (job_config.training.local_batch_size * dp_degree) == 0
-        ), (
-            f"global batch size must be multiple of local batch size times "
-            f"data-parallel degree ({global_batch_size} "
-            f"% ({job_config.training.local_batch_size} * {dp_degree}) != 0)"
-        )
-
-        # calculate gradient accumulation steps
-        self.gradient_accumulation_steps = global_batch_size // (
-            job_config.training.local_batch_size * dp_degree
-        )
-        assert self.gradient_accumulation_steps > 0
-        self.loss_fn = rescale_accumulated_loss(
-            self.loss_fn, self.gradient_accumulation_steps
-        )
 
         # apply parallelisms and initialization
         if parallel_dims.pp_enabled:
@@ -297,6 +382,20 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         self.step = 0
         self.ntokens_seen = 0
 
+        # This is only used with datatrove dataloader (multi-stage multi-stage )
+        self.metadata = TrainingMetadata(
+            consumed_train_samples=0,
+            consumed_tokens_total=0,
+            last_train_step=0,
+            last_stage_idx=0,
+            data_stages=[DataStageMetadata(
+                name=stage.name,
+                start_training_step=stage.start_training_step,
+                consumed_train_samples=0,
+                sequence_length=stage.sequence_length if stage.sequence_length is not None else job_config.training.seq_len
+            ) for stage in self.job_config.data_stages]
+        )
+
         self.checkpointer = CheckpointManager(
             dataloader=self.dataloader,
             model_parts=self.model_parts,
@@ -358,7 +457,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         logger.info(
             "Trainer is initialized with "
             f"local batch size {job_config.training.local_batch_size}, "
-            f"global batch size {global_batch_size}, "
+            f"global batch size {self.global_batch_size}, "
             f"gradient accumulation steps {self.gradient_accumulation_steps}, "
             f"sequence length {job_config.training.seq_len}, "
             f"total steps {job_config.training.steps} "
@@ -380,19 +479,42 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                 # If data runs out during gradient accumulation, that
                 # entire step will not be executed.
                 raise DataloaderStopIteration() from ex
-            input_dict, labels = batch
-            ntokens_batch = labels.numel()
+
+            # Handle different dataloader formats
+            if isinstance(batch, dict):
+                # Single dict format from datadrove: {input_ids, position_ids, label_ids, label_mask}
+                input_dict = {k: v for k, v in batch.items() if k != 'label_ids'}
+                labels = batch['label_ids']
+            else:
+                # Tuple format: (input_dict, labels)
+                input_dict, labels = batch
+
+            ntokens_batch = labels.size
+
+            ntokens_batch = labels.numel() if isinstance(labels, torch.Tensor) else labels.size
             self.ntokens_seen += ntokens_batch
             self.metrics_processor.ntokens_since_last_log += ntokens_batch
             self.metrics_processor.data_loading_times.append(
                 time.perf_counter() - data_load_start
             )
 
+            if self.job_config.data_stages:
+                # updating token consumption per dataset (basically the dataloder state)
+                self._update_datatrove_consumption_metrics(data_iterable)
+
             # Move tensors to the appropriate device
             for k, v in input_dict.items():
+                # DataCollatorForCLMWithPositionIds returns numpy arrays
                 if isinstance(v, torch.Tensor):
                     input_dict[k] = v.to(device_type)
-            labels = labels.to(device_type)
+                else:
+                    input_dict[k] = torch.from_numpy(v).to(device_type)
+
+            if isinstance(labels, torch.Tensor):
+                labels = labels.to(device_type)
+            else:
+                # Convert NumPy array to PyTorch tensor
+                labels = torch.from_numpy(labels).to(device_type)
 
             yield input_dict, labels
 
@@ -402,9 +524,12 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         model_parts = self.model_parts
         parallel_dims = self.parallel_dims
 
+        inputs = input_dict.get("input", None)
+        if inputs is None:
+            inputs = input_dict.get("input_ids")
+
         # apply context parallelism if cp is enabled
         # ensure CP handles the separate freqs_cis buffer for each pp stage
-        inputs = input_dict["input"]
         optional_context_parallel_ctx = (
             dist_utils.create_context_parallel_ctx(
                 cp_mesh=parallel_dims.world_mesh["cp"],
@@ -452,17 +577,113 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
 
         return loss
 
+    def _create_datatrove_dataloader(self) -> DataLoader:
+        # NOTE (MC): This is a porting from Nanotron and it assumes that the trainer state has been reloaded.
+        # This is why this method needs to be called right after reloading the trainer state in self.train().
+        # https://github.com/huggingface/nanotron/blob/bc1f5a612e9546ba19512130b13ec94b5f8609d2/run_train.py#L312-L391
+
+        current_stage = None
+        # WARNING: we assume we train on last stage
+        stage_idx = len(self.job_config.data_stages) - 1
+        stage_args = self.job_config.data_stages[stage_idx]
+
+        if self.step+1 == stage_args.start_training_step:
+            print(f"Starting new stage {stage_args.name}")
+            # we start a new stage
+            if stage_idx >= len(self.metadata.data_stages):
+                self.metadata.data_stages.append(DataStageMetadata(
+                    name=stage_args.name,
+                    start_training_step=stage_args.start_training_step,
+                    consumed_train_samples=0,
+                    consumed_tokens_per_dataset_folder={},
+                    sequence_length=self.job_config.training.seq_len,
+                ))
+        elif len(self.metadata.data_stages) < len(self.job_config.data_stages):
+            raise ValueError(f"If you're trying to start a new stage, you need to set `start_training_step` to the step after the last stage's: {trainer.iteration_step+1}")
+
+        current_stage = self.metadata.data_stages[stage_idx]
+        cur_stage_consumed_train_samples = current_stage.consumed_train_samples
+        consumed_tokens_per_dataset_folder = current_stage.consumed_tokens_per_dataset_folder
+        stage_args_data = self.job_config.data_stages[stage_idx].data
+
+        # warn that if seqlen of stage - 1 has changed, consumed_train_samples=0 so we'll assume we're reading from new folder (so that we can resume training)
+        if current_stage.sequence_length != self.metadata.data_stages[-1].sequence_length:
+            raise NotImplementedError("We don't support changing sequence length between stages yet")
+            # if current_stage.consumed_train_samples == 0:
+            #     log_rank(
+            #         f"Warning: The sequence length of the last stage has changed from {trainer.metadata.data_stages[-1].sequence_length} to {current_stage.sequence_length}. We'll assume we're reading from the beginning of the dataset folders.",
+            #         logger=logger,
+            #         level=logging.WARNING,
+            #         rank=0,
+            #     )
+            # else:
+            #     # we're resuming training, so that's fine
+            #     pass
+            # cur_stage_consumed_train_samples = current_stage.consumed_train_samples
+
+        else:
+            # Prepare last_stages_consumed_tokens_per_dataset_folder which will
+            # be used to offset BlendableDataset to avoid reseeing consumed
+            # tokens even when sampler has restarted for this stage
+            last_stages_consumed_tokens_per_dataset_folder = {}
+            for stage in self.metadata.data_stages[:-1]:
+                for folder_path, consumed_tokens in stage.consumed_tokens_per_dataset_folder.items():
+                    last_stages_consumed_tokens_per_dataset_folder[folder_path] = last_stages_consumed_tokens_per_dataset_folder.get(folder_path, 0) + consumed_tokens
+
+        # Use datatrove dataloader with TokenizedBytesFolderDataset
+        return self.train_spec.build_dataloader_fn(
+            global_batch_size=self.global_batch_size,
+            micro_batch_size=self.job_config.training.local_batch_size,
+            job_config=self.job_config,
+            stage_args_data=stage_args_data,
+            parallel_dims=self.parallel_dims, # TODO: meaybe this one should be self.ft_manager (Fault Tolerance)
+            input_pp_rank=0, # TODO
+            output_pp_rank=0,  # TODO
+            consumed_train_samples_stage=cur_stage_consumed_train_samples,
+            consumed_tokens_per_dataset_folder=consumed_tokens_per_dataset_folder,
+            last_stages_consumed_tokens_per_dataset_folder=last_stages_consumed_tokens_per_dataset_folder,
+            tokenizer=self.tokenizer,
+            current_iteration=self.step # this is only used for estimating how many needed samples are still available in the dataset
+        )
+
+    def _update_datatrove_consumption_metrics(self, data_iterable):
+        if hasattr(data_iterable, "dataset") and hasattr(data_iterable.dataset, "update_consumption_metrics"):
+            # TODO: only works for BlendableDataset (MC: not a problem for us)
+            data_iterable.dataset.update_consumption_metrics(
+                start_idx=(self.step - 1) * self.global_batch_size,  # assumes we start from iteration_step=1
+                end_idx=self.step * self.global_batch_size,
+                sequence_length=self.job_config.training.seq_len,
+            )
+
+        # Training Logs
+        # Track consumed tokens for all dataset folders in current stage
+        if hasattr(data_iterable, "dataset"):
+            consumption_stats = data_iterable.dataset.get_consumption_stats()
+            current_stage = self.metadata.data_stages[self.metadata.last_stage_idx]
+
+            # Update consumed tokens for all folders in the consumption stats
+            for folder_path, stats in consumption_stats.items():
+                current_stage.consumed_tokens_per_dataset_folder[folder_path] = stats["tokens"]
+
+        # Original consumption tracking
+        self.metadata.consumed_train_samples += self.global_batch_size # TODO: Legacy: idc abt this
+        self.metadata.consumed_tokens_total += self.global_batch_size * self.job_config.training.seq_len
+        self.metadata.last_train_step = self.step
+        self.metadata.current_stage.consumed_train_samples += self.global_batch_size
+        assert self.metadata.current_stage.sequence_length == self.job_config.training.seq_len, \
+            f"Sequence length mismatch between the current stage {self.metadata.current_stage.sequence_length} and the global sequence length {self.job_config.training.seq_len}"
+
     def _compute_param_norms(self) -> dict[str, float]:
         """Compute L1 and L2 norms for each layer's parameters."""
         param_norms = {}
-        
+
         for model in self.model_parts:
             for name, param in model.named_parameters():
                 if param.requires_grad and param.data is not None:
                     # Compute L1 and L2 norms
                     l1_norm = param.data.abs().sum().item()
                     l2_norm = param.data.norm(2).item()
-                    
+
                     # Parse the parameter name to create a structured metric name
                     if "tok_embeddings" in name:
                         # Embedding layer
@@ -475,13 +696,13 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                         parts = name.split(".")
                         layer_idx = None
                         component = None
-                        
+
                         # Find layer index
                         for i, part in enumerate(parts):
                             if part == "layers" and i + 1 < len(parts):
                                 layer_idx = int(parts[i + 1]) + 1  # Add 1 so layer 0 becomes layer 1
                                 remaining = ".".join(parts[i + 2:])
-                                
+
                                 # Identify component type
                                 if "attention.wq" in remaining:
                                     component = "attn_q"
@@ -506,7 +727,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                                 elif "qk_norm.key_norm" in remaining:
                                     component = "qk_norm_k"
                                 break
-                        
+
                         if layer_idx is not None and component is not None:
                             metric_base = f"param_norms/layer_{layer_idx}/{component}"
                         else:
@@ -518,11 +739,11 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                             metric_base = "param_norms/final_norm/weight"
                         else:
                             metric_base = f"param_norms/other/{name.replace('.', '_')}"
-                    
+
                     # Add L1 and L2 norms
                     param_norms[f"{metric_base}/l1"] = l1_norm
                     param_norms[f"{metric_base}/l2"] = l2_norm
-        
+
         return param_norms
 
     def train_step(
@@ -579,16 +800,19 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
             global_avg_loss = global_max_loss = loss.detach().item()
 
         extra_metrics = {
+            "consumed_tokens_total": self.metadata.consumed_tokens_total,
             "n_tokens_seen": self.ntokens_seen,
             "lr": lr,
         }
-        
+        # consumed tokens per dataset across all stages
+        extra_metrics.update(self.metadata.consumed_tokens_per_dataset_folder_total)
+
         # Compute parameter norms for weight decay monitoring if enabled
-        if (self.job_config.metrics.log_param_norms and 
+        if (self.job_config.metrics.log_param_norms and
             self.step % self.job_config.metrics.log_param_norms_freq == 0):
             param_norms = self._compute_param_norms()
             extra_metrics.update(param_norms)
-        
+
         self.metrics_processor.log(
             self.step,
             global_avg_loss,
@@ -603,6 +827,11 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
 
         self.checkpointer.load(step=job_config.checkpoint.load_step)
         logger.info(f"Training starts at step {self.step + 1}")
+
+        # Create datatrove multi-stage dataloader after reloading trainer state
+        # to get token consumption statistics and restart from the correct step/tokens
+        if self.job_config.data_stages:
+            self.dataloader = self._create_datatrove_dataloader()
 
         leaf_folder = (
             ""
@@ -673,11 +902,16 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         logger.info("Training completed")
 
     def state_dict(self) -> dict[str, Any]:
-        return {"step": self.step, "ntokens_seen": self.ntokens_seen}
+        return {
+            "step": self.step,
+            "ntokens_seen": self.ntokens_seen,
+            "metadata": self.metadata
+        }
 
     def load_state_dict(self, state_dict: dict[str, Any]):
         self.step = state_dict["step"]
         self.ntokens_seen = state_dict["ntokens_seen"]
+        self.metadata = state_dict["metadata"]
 
     def close(self) -> None:
         if self.checkpointer:
@@ -687,9 +921,10 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
 
 
 if __name__ == "__main__":
-    init_logger()
     config_manager = ConfigManager()
     config = config_manager.parse_args()
+    os.makedirs(config.job.dump_folder, exist_ok=True)
+    init_logger(Path(config.job.dump_folder) / "train.log")
     trainer: Optional[Trainer] = None
 
     try:

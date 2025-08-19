@@ -12,7 +12,9 @@ set -ex
 # LOG_RANK=0,1 NGPU=4 ./run_train.sh
 NGPU=${NGPU:-"8"}
 export LOG_RANK=${LOG_RANK:-0}
-CONFIG_FILE=${CONFIG_FILE:-"./torchtitan/models/llama3/train_configs/debug_model.toml"}
+# CONFIG_FILE=${CONFIG_FILE:-"./torchtitan/models/llama3/train_configs/debug_model.toml"}
+# CONFIG_FILE=${CONFIG_FILE:-"./torchtitan/models/boom/train_configs/sl3-datamix/smollm135M.toml"}
+CONFIG_FILE=${CONFIG_FILE:-"./torchtitan/models/boom/train_configs/sl3-datamix/smollm3B.toml"}
 
 TORCHFT_LIGHTHOUSE=${TORCHFT_LIGHTHOUSE:-"http://localhost:29510"}
 

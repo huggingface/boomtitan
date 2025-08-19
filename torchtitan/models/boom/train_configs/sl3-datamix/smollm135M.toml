@@ -1,0 +1,236 @@
+# torchtitan Config.toml
+
+[job]
+dump_folder = "./outputs"
+description = "Smollm2 135M debug training"
+print_args = false
+use_for_integration_test = true
+
+[profiling]
+enable_profiling = false
+save_traces_folder = "profile_trace"
+profile_freq = 10
+enable_memory_snapshot = false
+save_memory_snapshot_folder = "memory_snapshot"
+
+[metrics]
+log_freq = 1
+disable_color_printing = false
+enable_tensorboard = false
+save_tb_folder = "tb"
+enable_wandb = true
+log_param_norms = true
+log_param_norms_freq = 500  # Log parameter norms every 500 steps
+
+[[data_stages]]
+  name = "stable"
+  start_training_step = 1
+
+  [data_stages.data]
+    num_loading_workers = 0
+    seed = 6
+
+    [data_stages.data.dataset]
+      pad_samples_to_global_batch_size = false
+      return_positions = true
+      token_size_in_bytes = 4
+      tokenizer_name = "meta-llama/Llama-3.2-1B"
+      use_old_brrr_dataloader = false
+      vocab_size = 128256
+      dataset_read_path = [
+        "./data/SL3_2.6TT/fineweb-edu/",
+        "./data/SL3_2.6TT/dclm/",
+        "./data/SL3_2.6TT/pes2o/",
+        "./data/SL3_2.6TT/wiki/",
+        "./data/SL3_2.6TT/stackexchange/",
+         # we use FineWeb2-HQ for all the languages below except Hindi, Thai, Korean for which we use FineWeb2
+        "./data/SL3_2.6TT/fw2-fra/",
+        "./data/SL3_2.6TT/fw2-spa/",
+        "./data/SL3_2.6TT/fw2-deu/",
+        "./data/SL3_2.6TT/fw2-ita/",
+        "./data/SL3_2.6TT/fw2-por/",
+        "./data/SL3_2.6TT/fw2-cmn/",
+        "./data/SL3_2.6TT/fw2-rus/",
+        "./data/SL3_2.6TT/fw2-fas/",
+        "./data/SL3_2.6TT/fw2-jpn/",
+        "./data/SL3_2.6TT/fw2-kor/",
+        "./data/SL3_2.6TT/fw2-hin/",
+        "./data/SL3_2.6TT/fw2-tha/",
+        "./data/SL3_2.6TT/fw2-vie/",
+        "./data/SL3_2.6TT/fw2-ell/",
+        "./data/SL3_2.6TT/infiwebmath/",
+        "./data/SL3_2.6TT/finemath/",
+        # we use stack v2 (StarCoder2data) data, just typo in s3 path names
+        "./data/SL3_2.6TT/stack-edu-Python/",
+        "./data/SL3_2.6TT/stack-edu-Java/",
+        "./data/SL3_2.6TT/stack-edu-JavaScript/",
+        "./data/SL3_2.6TT/stack-edu-C/",
+        "./data/SL3_2.6TT/stack-edu-Cpp/",
+        "./data/SL3_2.6TT/stack-edu-C-Sharp/",
+        "./data/SL3_2.6TT/stack-edu-PHP/",
+        "./data/SL3_2.6TT/stack-edu-TypeScript/",
+        "./data/SL3_2.6TT/stack-edu-Swift/",
+        "./data/SL3_2.6TT/stack-edu-SQL/",
+        "./data/SL3_2.6TT/stack-edu-Ruby/",
+        "./data/SL3_2.6TT/stack-edu-Markdown/",
+        "./data/SL3_2.6TT/stack-edu-HTML/",
+        "./data/SL3_2.6TT/stack-edu-Rust/",
+        "./data/SL3_2.6TT/stack-edu-Go/",
+        "./data/SL3_2.6TT/stack-edu-Shell/",
+        "./data/SL3_2.6TT/pull-requests/",
+        "./data/SL3_2.6TT/kaggle/",
+        "./data/SL3_2.6TT/jupyter-scripts/",
+        "./data/SL3_2.6TT/github-issues/",
+      ]
+      dataset_folder = [
+        "./data/SL3_2.6TT/fineweb-edu/",
+        "./data/SL3_2.6TT/dclm/",
+        "./data/SL3_2.6TT/pes2o/",
+        "./data/SL3_2.6TT/wiki/",
+        "./data/SL3_2.6TT/stackexchange/",
+         # we use FineWeb2-HQ for all the languages below except Hindi, Thai, Korean for which we use FineWeb2
+        "./data/SL3_2.6TT/fw2-fra/",
+        "./data/SL3_2.6TT/fw2-spa/",
+        "./data/SL3_2.6TT/fw2-deu/",
+        "./data/SL3_2.6TT/fw2-ita/",
+        "./data/SL3_2.6TT/fw2-por/",
+        "./data/SL3_2.6TT/fw2-cmn/",
+        "./data/SL3_2.6TT/fw2-rus/",
+        "./data/SL3_2.6TT/fw2-fas/",
+        "./data/SL3_2.6TT/fw2-jpn/",
+        "./data/SL3_2.6TT/fw2-kor/",
+        "./data/SL3_2.6TT/fw2-hin/",
+        "./data/SL3_2.6TT/fw2-tha/",
+        "./data/SL3_2.6TT/fw2-vie/",
+        "./data/SL3_2.6TT/fw2-ell/",
+        "./data/SL3_2.6TT/infiwebmath/",
+        "./data/SL3_2.6TT/finemath/",
+        # we use stack v2 (StarCoder2data) data, just typo in s3 path names
+        "./data/SL3_2.6TT/stack-edu-Python/",
+        "./data/SL3_2.6TT/stack-edu-Java/",
+        "./data/SL3_2.6TT/stack-edu-JavaScript/",
+        "./data/SL3_2.6TT/stack-edu-C/",
+        "./data/SL3_2.6TT/stack-edu-Cpp/",
+        "./data/SL3_2.6TT/stack-edu-C-Sharp/",
+        "./data/SL3_2.6TT/stack-edu-PHP/",
+        "./data/SL3_2.6TT/stack-edu-TypeScript/",
+        "./data/SL3_2.6TT/stack-edu-Swift/",
+        "./data/SL3_2.6TT/stack-edu-SQL/",
+        "./data/SL3_2.6TT/stack-edu-Ruby/",
+        "./data/SL3_2.6TT/stack-edu-Markdown/",
+        "./data/SL3_2.6TT/stack-edu-HTML/",
+        "./data/SL3_2.6TT/stack-edu-Rust/",
+        "./data/SL3_2.6TT/stack-edu-Go/",
+        "./data/SL3_2.6TT/stack-edu-Shell/",
+        "./data/SL3_2.6TT/pull-requests/",
+        "./data/SL3_2.6TT/kaggle/",
+        "./data/SL3_2.6TT/jupyter-scripts/",
+        "./data/SL3_2.6TT/github-issues/",
+      ]
+
+      dataset_weights = [
+        0.333,
+        0.37,
+        0.02,
+        0.001,
+        0.004,
+        0.016,
+        0.02,
+        0.022,
+        0.0105,
+        0.01,
+        0.01,
+        0.01,
+        0.003,
+        0.00325,
+        0.00325,
+        0.00325,
+        0.00325,
+        0.00325,
+        0.00225,
+        0.01,
+        0.017,
+        0.025,
+        0.013,
+        0.013,
+        0.007,
+        0.018,
+        0.006,
+        0.006,
+        0.003,
+        0.001,
+        0.004,
+        0.0008,
+        0.005,
+        0.006,
+        0.0008,
+        0.0005,
+        0.0007,
+        0.006,
+        0.0005,
+        0.0055,
+        0.00322,
+      ]
+
+[model]
+name = "boom"
+flavor = "smollm135M"
+# test folder with tokenizer.json, for debug purpose only
+tokenizer_path = "./assets/tokenizer/Llama-3.2-1B"
+# converters = ["float8"]
+use_flex_attn = true
+attn_mask_type = "document_causal"
+eos_id = 128001  # Adjust based on your tokenizer's EOS token ID
+
+[optimizer]
+name = "AdamW"
+lr = 8e-4
+eps = 1e-8
+
+[lr_scheduler]
+warmup_steps = 200  # lr scheduler warm up, normally 20% of the train steps
+decay_ratio = 0.8  # lr scheduler decay ratio, 80% of the train steps
+decay_type = "linear"
+min_lr_factor = 0.0
+
+[training]
+local_batch_size = 32
+seq_len = 2048
+max_norm = 1.0  # grad norm clipping
+steps = 1000
+compile = true
+dataset = ""
+seed = 42  # for reproducibility
+deterministic = false  # For full determinism (slower but exact reproducibility)
+
+[parallelism]
+data_parallel_replicate_degree = 1
+data_parallel_shard_degree = -1
+fsdp_reshard_after_forward = "default" # default / never / always
+tensor_parallel_degree = 1
+enable_async_tensor_parallel = false
+pipeline_parallel_degree = 1
+context_parallel_degree = 1
+
+[checkpoint]
+enable_checkpoint = true
+folder = "checkpoint"
+interval = 10
+last_save_model_only = false
+export_dtype = "float32"
+async_mode = "disabled"  # ["disabled", "async", "async_with_pinned_mem"]
+
+[activation_checkpoint]
+mode = "selective"  # ["none", "selective", "full"]
+selective_ac_option = '2'  # 'int' = ac every positive int layer or 'op', ac based on ops policy
+
+[float8]
+enable_fsdp_float8_all_gather = false
+precompute_float8_dynamic_scale_for_fsdp = false
+filter_fqns = ["output"]
+
+[validation]
+enabled = false
+dataset = "c4_validation"
+freq = 5
+steps = 100

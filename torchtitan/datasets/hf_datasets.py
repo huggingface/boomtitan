@@ -20,6 +20,7 @@ from torchtitan.components.dataloader import ParallelAwareDataloader
 from torchtitan.components.tokenizer import BaseTokenizer
 from torchtitan.config import JobConfig
 from torchtitan.tools.logging import logger
+from torchtitan.datasets.tokenized_bytes import get_tb_datasets, get_tb_dataloader
 
 
 def _load_c4_dataset(dataset_path: str, split: str):
@@ -54,12 +55,12 @@ DATASETS = {
     ## this is an example this should be modify with the actual path
     ## huggingface-cli download HuggingFaceFW/fineweb-edu --repo-type dataset --include sample/10BT/* --local-dir /fsx/elie_bakouch/boomtitan/datasets/fw-edu
     "fw-edu-10bt-local": DatasetConfig(
-        path="/fsx/elie_bakouch/boomtitan/datasets/fw-edu/sample/10BT",
+        path="./data/fw-edu/sample/10BT",
         loader=lambda path: load_dataset(path, split="train"),
         text_processor=lambda sample: sample["text"],
     ),
     "fw-edu-100bt-local": DatasetConfig(
-        path="/fsx/elie_bakouch/boomtitan/datasets/fw-edu/sample/100ÒBT",
+        path="./data/fw-edu/sample/100BT",
         loader=lambda path: load_dataset(path, split="train"),
         text_processor=lambda sample: sample["text"],
     ),
@@ -244,3 +245,54 @@ def build_hf_validation_dataloader(
         dp_world_size=dp_world_size,
         batch_size=batch_size,
     )
+
+def build_tb_dataloader(
+    global_batch_size,
+    micro_batch_size,
+    job_config: JobConfig,
+    stage_args_data,
+    parallel_dims,
+    input_pp_rank: int,
+    output_pp_rank: int,
+    consumed_train_samples_stage: int,
+    consumed_tokens_per_dataset_folder: int,
+    last_stages_consumed_tokens_per_dataset_folder: int,
+    tokenizer: BaseTokenizer,
+    current_iteration=0,
+) -> ParallelAwareDataloader:
+    """Build a tokenized bytes data~loader."""
+
+    train_dataset = get_tb_datasets(
+        data_config=stage_args_data.dataset,
+        global_batch_size=global_batch_size,
+        sequence_length=job_config.training.seq_len,
+        train_steps=job_config.training.steps,
+        current_iteration=current_iteration,
+        parallel_dims=parallel_dims,
+        shuffle=stage_args_data.dataset.shuffle_files,
+        eos_token_id=tokenizer.eos_id,
+        seed=stage_args_data.seed,
+        consumed_samples=consumed_train_samples_stage,
+        consumed_tokens_per_dataset_folder=consumed_tokens_per_dataset_folder,
+        last_stages_consumed_tokens_per_dataset_folder=last_stages_consumed_tokens_per_dataset_folder,
+    )
+    dataloader = get_tb_dataloader(
+        dataset=train_dataset,
+        sequence_length=job_config.training.seq_len,
+        micro_batch_size=micro_batch_size,
+        global_batch_size=global_batch_size,
+        num_workers=stage_args_data.num_loading_workers,
+        cfg=stage_args_data.dataset,
+        consumed_samples=consumed_train_samples_stage,
+        num_samples=job_config.training.steps * global_batch_size, # TODO: this overshoots what's needed by the current stage, but it doesnt matter?
+        parallel_dims=parallel_dims,
+        input_pp_rank=input_pp_rank,
+        output_pp_rank=output_pp_rank,
+        dataloader_drop_last=True,
+        dataloader_pin_memory=True,
+        use_position_ids=True,
+        use_doc_masking=True # getattr(trainer.model_config, "_use_doc_masking", None),
+    )
+
+    # dist.barrier()
+    return dataloader
