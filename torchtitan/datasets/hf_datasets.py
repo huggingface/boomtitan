@@ -55,12 +55,12 @@ DATASETS = {
     ## this is an example this should be modify with the actual path
     ## huggingface-cli download HuggingFaceFW/fineweb-edu --repo-type dataset --include sample/10BT/* --local-dir /fsx/elie_bakouch/boomtitan/datasets/fw-edu
     "fw-edu-10bt-local": DatasetConfig(
-        path="/fsx/elie_bakouch/boomtitan/datasets/fw-edu/sample/10BT",
+        path="./data/fw-edu/sample/10BT",
         loader=lambda path: load_dataset(path, split="train"),
         text_processor=lambda sample: sample["text"],
     ),
     "fw-edu-100bt-local": DatasetConfig(
-        path="/fsx/elie_bakouch/boomtitan/datasets/fw-edu/sample/100ÒBT",
+        path="./data/fw-edu/sample/100BT",
         loader=lambda path: load_dataset(path, split="train"),
         text_processor=lambda sample: sample["text"],
     ),

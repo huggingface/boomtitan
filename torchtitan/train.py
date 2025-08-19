@@ -242,7 +242,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         )
 
         if not job_config.data_stages:
-            self.logger("Create HF stateful dataloader...")
+            logger.info("Creating HF stateful dataloader...")
             # Use HuggingFace standard dataloader with load_dataset
             self.dataloader = self.train_spec.build_dataloader_fn(
                 dp_world_size=dp_degree,
@@ -501,7 +501,6 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
             if self.job_config.data_stages:
                 # updating token consumption per dataset (basically the dataloder state)
                 self._update_datatrove_consumption_metrics(data_iterable)
-                print(self.metadata)
 
             # Move tensors to the appropriate device
             for k, v in input_dict.items():
@@ -525,9 +524,12 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         model_parts = self.model_parts
         parallel_dims = self.parallel_dims
 
+        inputs = input_dict.get("input", None)
+        if inputs is None:
+            inputs = input_dict.get("input_ids")
+
         # apply context parallelism if cp is enabled
         # ensure CP handles the separate freqs_cis buffer for each pp stage
-        inputs = input_dict.get("input") or input_dict.get("input_ids")
         optional_context_parallel_ctx = (
             dist_utils.create_context_parallel_ctx(
                 cp_mesh=parallel_dims.world_mesh["cp"],
@@ -641,7 +643,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
             consumed_tokens_per_dataset_folder=consumed_tokens_per_dataset_folder,
             last_stages_consumed_tokens_per_dataset_folder=last_stages_consumed_tokens_per_dataset_folder,
             tokenizer=self.tokenizer,
-            current_iteration=self.step+1
+            current_iteration=self.step # this is only used for estimating how many needed samples are still available in the dataset
         )
 
     def _update_datatrove_consumption_metrics(self, data_iterable):
@@ -798,9 +800,12 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
             global_avg_loss = global_max_loss = loss.detach().item()
 
         extra_metrics = {
+            "consumed_tokens_total": self.metadata.consumed_tokens_total,
             "n_tokens_seen": self.ntokens_seen,
             "lr": lr,
         }
+        # consumed tokens per dataset across all stages
+        extra_metrics.update(self.metadata.consumed_tokens_per_dataset_folder_total)
 
         # Compute parameter norms for weight decay monitoring if enabled
         if (self.job_config.metrics.log_param_norms and
