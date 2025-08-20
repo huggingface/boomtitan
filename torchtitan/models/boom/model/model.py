@@ -170,6 +170,7 @@ class Attention(nn.Module):
         super().__init__()
         self.freq_nope = model_args.freq_nope
         self.layer_id = layer_id
+        self.init_std = model_args.init_std
         self.n_heads = model_args.n_heads
         self.n_kv_heads = (
             model_args.n_heads
@@ -214,10 +215,10 @@ class Attention(nn.Module):
 
         self.sdpa = build_attention(model_args.use_flex_attn, model_args.attn_mask_type)
 
-    def init_weights(self, init_std: float):
+    def init_weights(self):
         for linear in (self.wq, self.wk, self.wv):
-            nn.init.trunc_normal_(linear.weight, mean=0.0, std=0.02)
-        nn.init.trunc_normal_(self.wo.weight, mean=0.0, std=init_std)
+            nn.init.trunc_normal_(linear.weight, mean=0.0, std=self.init_std)
+        nn.init.trunc_normal_(self.wo.weight, mean=0.0, std=self.init_std)
         if self.qk_norm is not None:
             self.qk_norm.init_weights()
 
@@ -296,8 +297,10 @@ class FeedForward(nn.Module):
         hidden_dim: int,
         multiple_of: int,
         ffn_dim_multiplier: float | None,
+        init_std: float = 0.02,
     ):
         super().__init__()
+        self.init_std = init_std
         hidden_dim = int(2 * hidden_dim / 3)
         # custom dim factor multiplier
         if ffn_dim_multiplier is not None:
@@ -311,10 +314,10 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
-    def init_weights(self, init_std: float):
-        nn.init.trunc_normal_(self.w1.weight, mean=0.0, std=0.02)
+    def init_weights(self):
+        nn.init.trunc_normal_(self.w1.weight, mean=0.0, std=self.init_std)
         for linear in (self.w2, self.w3):
-            nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
+            nn.init.trunc_normal_(linear.weight, mean=0.0, std=self.init_std)
 
 
 class TransformerBlock(nn.Module):
@@ -347,14 +350,13 @@ class TransformerBlock(nn.Module):
             hidden_dim=4 * model_args.dim,
             multiple_of=model_args.multiple_of,
             ffn_dim_multiplier=model_args.ffn_dim_multiplier,
+            init_std=model_args.init_std,
         )
         self.attention_norm = nn.RMSNorm(model_args.dim, eps=model_args.norm_eps)
         self.ffn_norm = nn.RMSNorm(model_args.dim, eps=model_args.norm_eps)
 
-        if model_args.depth_init:
-            self.weight_init_std = 0.02 / (2 * (layer_id + 1)) ** 0.5
-        else:
-            self.weight_init_std = 0.02 / (2 * model_args.n_layers) ** 0.5
+        # Use init_std directly (ignoring depth_init when init_std is set)
+        self.weight_init_std = model_args.init_std
 
     def forward(
         self,
@@ -379,8 +381,8 @@ class TransformerBlock(nn.Module):
     def init_weights(self):
         for norm in (self.attention_norm, self.ffn_norm):
             norm.reset_parameters()
-        self.attention.init_weights(self.weight_init_std)
-        self.feed_forward.init_weights(self.weight_init_std)
+        self.attention.init_weights()
+        self.feed_forward.init_weights()
 
 
 class Transformer(nn.Module, ModelProtocol):
@@ -445,21 +447,21 @@ class Transformer(nn.Module, ModelProtocol):
         with torch.device(buffer_device):
             self.freqs_cis = self._precompute_freqs_cis()
         if self.tok_embeddings is not None:
-            nn.init.normal_(self.tok_embeddings.weight)
+            nn.init.normal_(self.tok_embeddings.weight, std=self.model_args.init_std)
         for layer in self.layers.values():
             if layer is not None:
                 layer.init_weights()
         if self.norm is not None:
             self.norm.reset_parameters()
-        final_out_std = self.model_args.dim**-0.5
+        # Use init_std for output layer as well
         cutoff_factor = 3
         if self.output is not None:
             nn.init.trunc_normal_(
                 self.output.weight,
                 mean=0.0,
-                std=final_out_std,
-                a=-cutoff_factor * final_out_std,
-                b=cutoff_factor * final_out_std,
+                std=self.model_args.init_std,
+                a=-cutoff_factor * self.model_args.init_std,
+                b=cutoff_factor * self.model_args.init_std,
             )
 
     def _precompute_freqs_cis(self) -> torch.Tensor:
