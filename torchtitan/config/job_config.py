@@ -107,6 +107,9 @@ class Model:
     freq_nope: int | None = None
     """Frequency for disabling RoPE (every Nth layer). If None, RoPE is used in all layers"""
     
+    init_std: float | None = None
+    """Standard deviation for weight initialization. If None, uses model's default"""
+    
     use_flex_attn: bool = False
     """Whether to use FlexAttention instead of standard SDPA"""
     

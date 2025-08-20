@@ -82,6 +82,7 @@ class TransformerModelArgs(BaseModelArgs):
         # Handle init_std parameter
         if hasattr(job_config.model, "init_std"):
             self.init_std = job_config.model.init_std
+            logger.info(f"Using custom init_std: {self.init_std}")
             
         # Handle FlexAttention parameters
         if hasattr(job_config.model, "use_flex_attn"):

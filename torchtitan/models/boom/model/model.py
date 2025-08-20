@@ -409,6 +409,9 @@ class Transformer(nn.Module, ModelProtocol):
         self.model_args = model_args
         self.vocab_size = model_args.vocab_size
         self.n_layers = model_args.n_layers
+        
+        # Log initialization std being used
+        logger.info(f"Initializing model with init_std={model_args.init_std}")
 
         self.tok_embeddings = nn.Embedding(model_args.vocab_size, model_args.dim)
 
