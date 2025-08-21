@@ -32,7 +32,8 @@ class TransformerModelArgs(BaseModelArgs):
     max_seq_len: int = 131072
     # If `True`, then each transformer block init uses its layer ID, and if
     # `False`, each uses the total number of transformer blocks
-    depth_init: bool = True
+    depth_init: bool = False
+    init_std: float = 0.02  # Standard deviation for weight initialization
 
     use_flex_attn: bool = False
     attn_mask_type: str = "causal"
@@ -77,6 +78,11 @@ class TransformerModelArgs(BaseModelArgs):
         # Handle use_qk_norm parameter
         if hasattr(job_config.model, "use_qk_norm"):
             self.use_qk_norm = job_config.model.use_qk_norm
+        
+        # Handle init_std parameter
+        if hasattr(job_config.model, "init_std"):
+            self.init_std = job_config.model.init_std
+            logger.info(f"Using custom init_std: {self.init_std}")
             
         # Handle FlexAttention parameters
         if hasattr(job_config.model, "use_flex_attn"):
