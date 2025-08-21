@@ -1,79 +1,71 @@
 # torchtitan Config.toml
+# Based on llama3_base/poc/llama3_smollm135M.toml with z-loss enabled
 
 [job]
 dump_folder = "./outputs"
-description = "Smollm3 3B debug training"
-print_args = true
+description = "Smollm2 135M training with z-loss"
+print_args = false
 use_for_integration_test = true
 
 [profiling]
 enable_profiling = false
 save_traces_folder = "profile_trace"
-profile_freq = 1000
+profile_freq = 10
 enable_memory_snapshot = false
 save_memory_snapshot_folder = "memory_snapshot"
 
 [metrics]
 log_freq = 1
 disable_color_printing = false
-enable_tensorboard = true
+enable_tensorboard = false
 save_tb_folder = "tb"
 enable_wandb = true
-save_for_all_ranks = false
 log_param_norms = true
-log_param_norms_freq = 500  # Log parameter norms every 10 steps
+log_param_norms_freq = 10  # Log parameter norms every 10 steps
 
 [model]
 name = "boom"
-freq_nope = 4
-use_qk_norm = true
-flavor = "smollm3B"
+flavor = "smollm135M"
+# test folder with tokenizer.json, for debug purpose only
 tokenizer_path = "./tests/assets/tokenizer"
 # converters = ["float8"]
 
 [optimizer]
 name = "AdamW"
-beta_1 = 0.9
-beta_2 = 0.95
-lr = 0.0002
+lr = 8e-4
 eps = 1e-8
-optim_implementation = "fused"
-## --
-# Weight decay exclusion settings
-wd_embeddings = false   # Exclude embeddings and output layer from weight decay
-wd_norm = true         # Apply weight decay to normalization layers
-wd_qknorm = true       # Apply weight decay to QKNorm layers (if enabled)
-
 
 [lr_scheduler]
-warmup_steps = 2000  # lr scheduler warm up, normally 20% of the train steps
-decay_ratio = 0  # WSD
+warmup_steps = 200  # lr scheduler warm up, normally 20% of the train steps
+decay_ratio = 0.8  # lr scheduler decay ratio, 80% of the train steps
 decay_type = "linear"
 min_lr_factor = 0.0
 
 [training]
-local_batch_size = 4
-seq_len = 4096
+local_batch_size = 32
+seq_len = 2048
 max_norm = 1.0  # grad norm clipping
-steps = 100
+steps = 1000
 compile = true
-dataset = "fw-edu-10BT-local"  # supported datasets: c4_test (2K), c4 (177M)
-seed = 6  # for reproducibility
+dataset = "c4"  # supported datasets: c4_test (2K), c4 (177M)
+seed = 42  # for reproducibility
 deterministic = true  # For full determinism (slower but exact reproducibility)
+z_loss_weight = 0.0001  # Enable z-loss with weight 1e-4 (PaLM default)
 
 [parallelism]
 data_parallel_replicate_degree = 1
-data_parallel_shard_degree = 4
+data_parallel_shard_degree = -1
 fsdp_reshard_after_forward = "default" # default / never / always
 tensor_parallel_degree = 1
 enable_async_tensor_parallel = false
 pipeline_parallel_degree = 1
 context_parallel_degree = 1
+disable_loss_parallel = true  # Required for z-loss when using TP
 
 [checkpoint]
 enable_checkpoint = false
 folder = "checkpoint"
-interval = 1000
+interval = 10
 last_save_model_only = false
 export_dtype = "float32"
 async_mode = "disabled"  # ["disabled", "async", "async_with_pinned_mem"]

@@ -445,7 +445,17 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                 assert len(model_parts) == 1
                 with self.maybe_enable_amp:
                     pred = model_parts[0](inputs, eos_id=self.tokenizer.eos_id)
-                    loss = self.loss_fn(pred, labels)
+                    loss_result = self.loss_fn(pred, labels)
+                    
+                    # Handle tuple return for z-loss logging
+                    if isinstance(loss_result, tuple):
+                        loss, z_loss = loss_result
+                        # Store z-loss for logging
+                        self._last_z_loss = z_loss.detach()
+                    else:
+                        loss = loss_result
+                        self._last_z_loss = None
+                    
                 # need to free to before bwd to avoid peaking memory
                 del pred
                 loss.backward()
@@ -537,12 +547,17 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         parallel_dims = self.parallel_dims
 
         accumulated_losses = []
+        accumulated_z_losses = []
         # If data runs out during gradient accumulation, that
         # entire step will not be executed.
         for microbatch in range(self.gradient_accumulation_steps):
             input_dict, labels = next(data_iterator)
             loss = self.forward_backward_step(input_dict, labels)
             accumulated_losses.append(loss.detach())
+            
+            # Collect z-loss if available
+            if hasattr(self, '_last_z_loss') and self._last_z_loss is not None:
+                accumulated_z_losses.append(self._last_z_loss)
 
         grad_norm = dist_utils.clip_grad_norm_(
             [p for m in self.model_parts for p in m.parameters()],
@@ -563,6 +578,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
 
         # Reduce the data collected over gradient accumulation steps.
         loss = torch.sum(torch.stack(accumulated_losses))
+        z_loss_avg = torch.mean(torch.stack(accumulated_z_losses)) if accumulated_z_losses else None
 
         # log metrics
         if not self.metrics_processor.should_log(self.step):
@@ -575,13 +591,27 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                 dist_utils.dist_mean(loss, parallel_dims.world_mesh["dp_cp"], ft_pg),
                 dist_utils.dist_max(loss, parallel_dims.world_mesh["dp_cp"], ft_pg),
             )
+            # Also reduce z-loss if it exists
+            global_z_loss = (
+                dist_utils.dist_mean(z_loss_avg, parallel_dims.world_mesh["dp_cp"], ft_pg)
+                if z_loss_avg is not None else None
+            )
         else:
             global_avg_loss = global_max_loss = loss.detach().item()
+            global_z_loss = z_loss_avg.item() if z_loss_avg is not None else None
 
         extra_metrics = {
             "n_tokens_seen": self.ntokens_seen,
             "lr": lr,
         }
+        
+        # Add z-loss metrics if available (under loss_metrics namespace)
+        if global_z_loss is not None:
+            extra_metrics["loss_metrics/z_loss_unweighted"] = global_z_loss
+            # Also add the weighted z-loss (actual contribution to loss)
+            z_loss_weight = getattr(self.job_config.training, 'z_loss_weight', 0.0)
+            if z_loss_weight > 0:
+                extra_metrics["loss_metrics/z_loss"] = global_z_loss * z_loss_weight
         
         # Compute parameter norms for weight decay monitoring if enabled
         if (self.job_config.metrics.log_param_norms and 
