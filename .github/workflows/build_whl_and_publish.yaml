@@ -13,7 +13,7 @@ permissions:
 jobs:
   generate-matrix:
     if: github.repository_owner == 'pytorch'
-    uses: pytorch/test-infra/.github/workflows/generate_binary_build_matrix.yml@main
+    uses: pytorch/test-infra/.github/workflows/generate_binary_build_matrix.yml@e950957c2aef5ac196b373ad29bf1e15692e2a21  # main
     with:
       package-type: wheel
       os: linux
@@ -25,7 +25,7 @@ jobs:
   build:
     needs: generate-matrix
     name: ${{ matrix.repository }}
-    uses: pytorch/test-infra/.github/workflows/build_wheels_linux.yml@main
+    uses: pytorch/test-infra/.github/workflows/build_wheels_linux.yml@e950957c2aef5ac196b373ad29bf1e15692e2a21  # main
     strategy:
       fail-fast: false
     with:
