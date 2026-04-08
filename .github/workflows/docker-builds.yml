@@ -40,19 +40,19 @@ jobs:
           mkdir "${GITHUB_WORKSPACE}"
 
       - name: Setup SSH (Click me for login details)
-        uses: pytorch/test-infra/.github/actions/setup-ssh@e950957c2aef5ac196b373ad29bf1e15692e2a21  # main
+        uses: pytorch/test-infra/.github/actions/setup-ssh@e950957c2aef5ac196b373ad29bf1e15692e2a21
         with:
           github-secret: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Checkout the repo
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Setup Linux
-        uses: pytorch/test-infra/.github/actions/setup-linux@e950957c2aef5ac196b373ad29bf1e15692e2a21  # main
+        uses: pytorch/test-infra/.github/actions/setup-linux@e950957c2aef5ac196b373ad29bf1e15692e2a21
 
       - name: Build docker image
         id: build-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@e950957c2aef5ac196b373ad29bf1e15692e2a21  # main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@e950957c2aef5ac196b373ad29bf1e15692e2a21
         with:
           docker-image-name: ${{ matrix.docker-image-name }}
           always-rebuild: true
@@ -60,5 +60,5 @@ jobs:
           force-push: true
 
       - name: Teardown Linux
-        uses: pytorch/test-infra/.github/actions/teardown-linux@e950957c2aef5ac196b373ad29bf1e15692e2a21  # main
+        uses: pytorch/test-infra/.github/actions/teardown-linux@e950957c2aef5ac196b373ad29bf1e15692e2a21
         if: always()
