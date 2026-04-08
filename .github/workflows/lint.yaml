@@ -21,7 +21,7 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: Setup python
-        uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c  # v4
+        uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c  # pinned to SHA
         with:
           python-version: ${{ matrix.python-version }}
       - name: Update pip
@@ -34,4 +34,6 @@ jobs:
         id: changed-files
         uses: tj-actions/changed-files@d6e91a2266cdb9d62096cebf1e8546899c6aa18f # v45.0.6
       - name: Lint modified files
-        run: pre-commit run --files ${{ steps.changed-files.outputs.all_changed_files }}
+        env:
+          ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
+        run: pre-commit run --files $ALL_CHANGED_FILES
