@@ -11,8 +11,13 @@ defaults:
   run:
     shell: bash -l -eo pipefail {0}
 
+permissions: {}
+
 jobs:
   lint:
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     strategy:
       matrix:
