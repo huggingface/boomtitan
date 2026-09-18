@@ -20,8 +20,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name == 'workflow_dispatch' }}
   cancel-in-progress: true
 
+permissions: {}
+
 jobs:
   docker-build:
+    permissions:
+      contents: read
+      id-token: write
     runs-on: [self-hosted, linux.2xlarge]
     timeout-minutes: 240
     strategy:
@@ -40,19 +45,19 @@ jobs:
           mkdir "${GITHUB_WORKSPACE}"
 
       - name: Setup SSH (Click me for login details)
-        uses: pytorch/test-infra/.github/actions/setup-ssh@e950957c2aef5ac196b373ad29bf1e15692e2a21  # main
+        uses: pytorch/test-infra/.github/actions/setup-ssh@8211ac1658f19599a28ef46aae7fbac932e93189  # main
         with:
           github-secret: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Checkout the repo
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup Linux
-        uses: pytorch/test-infra/.github/actions/setup-linux@e950957c2aef5ac196b373ad29bf1e15692e2a21  # main
+        uses: pytorch/test-infra/.github/actions/setup-linux@8211ac1658f19599a28ef46aae7fbac932e93189  # main
 
       - name: Build docker image
         id: build-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@e950957c2aef5ac196b373ad29bf1e15692e2a21  # main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@8211ac1658f19599a28ef46aae7fbac932e93189  # main
         with:
           docker-image-name: ${{ matrix.docker-image-name }}
           always-rebuild: true
@@ -60,5 +65,5 @@ jobs:
           force-push: true
 
       - name: Teardown Linux
-        uses: pytorch/test-infra/.github/actions/teardown-linux@e950957c2aef5ac196b373ad29bf1e15692e2a21  # main
+        uses: pytorch/test-infra/.github/actions/teardown-linux@8211ac1658f19599a28ef46aae7fbac932e93189  # main
         if: always()
