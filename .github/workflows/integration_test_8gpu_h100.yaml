@@ -23,7 +23,7 @@ defaults:
 
 jobs:
   build-test:
-    uses: pytorch/test-infra/.github/workflows/linux_job.yml@main
+    uses: pytorch/test-infra/.github/workflows/linux_job.yml@353c6289839803b8d1d58d5dd8a0b3a5e7ffa463  # main
     with:
       runner: linux.aws.h100.8
       gpu-arch-type: cuda
