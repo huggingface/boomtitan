@@ -21,6 +21,7 @@ from torchtitan.components.ft import FTManager, has_torchft
 from torchtitan.config import Optimizer as OptimizerConfig
 from torchtitan.distributed import ParallelDims
 from torchtitan.tools.logging import logger
+from torchtitan.components.adam_corrected import AdamC
 
 __all__ = [
     "OptimizersContainer",
@@ -251,13 +252,14 @@ class FTOptimizersContainer(OptimizersContainer):
             super().zero_grad(*args, **kwargs)
 
 
-def get_param_groups(optimizer_config: OptimizerConfig, model: nn.Module) -> list[dict[str, Any]]:
+def get_param_groups(optimizer_config: OptimizerConfig, model: nn.Module, for_adamc: bool = False) -> list[dict[str, Any]]:
     """
     Create parameter groups with different weight decay settings.
     
     Args:
         optimizer_config: Optimizer configuration with weight decay settings
         model: The model to create parameter groups for
+        for_adamc: Whether to create groups for AdamC (includes parameter names)
         
     Returns:
         List of parameter groups for the optimizer
@@ -265,11 +267,12 @@ def get_param_groups(optimizer_config: OptimizerConfig, model: nn.Module) -> lis
     # Separate parameters for weight decay
     decay_params = []
     no_decay_params = []
+    decay_names = []
+    no_decay_names = []
     
-    # Track parameter counts and names for logging
+    # Track parameter counts for logging
     decay_count = 0
     no_decay_count = 0
-    no_decay_names = []
     
     for name, param in model.named_parameters():
         if not param.requires_grad:
@@ -293,11 +296,12 @@ def get_param_groups(optimizer_config: OptimizerConfig, model: nn.Module) -> lis
             
         if should_decay:
             decay_params.append(param)
+            decay_names.append(name)
             decay_count += 1
         else:
             no_decay_params.append(param)
-            no_decay_count += 1
             no_decay_names.append(name)
+            no_decay_count += 1
     
     # Log parameter distribution only on rank 0 (debug level)
     if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
@@ -324,15 +328,21 @@ def get_param_groups(optimizer_config: OptimizerConfig, model: nn.Module) -> lis
     # Create parameter groups
     param_groups = []
     if decay_params:
-        param_groups.append({
+        group = {
             "params": decay_params,
             "weight_decay": optimizer_config.weight_decay,
-        })
+        }
+        if for_adamc:
+            group["param_names"] = decay_names
+        param_groups.append(group)
     if no_decay_params:
-        param_groups.append({
+        group = {
             "params": no_decay_params,
             "weight_decay": 0.0,
-        })
+        }
+        if for_adamc:
+            group["param_names"] = no_decay_names
+        param_groups.append(group)
     
     return param_groups
 
@@ -421,16 +431,25 @@ def build_optimizers(
     
     # Parameter groups are only supported for single model (non-PP) and not with optim_in_bwd
     param_groups = None
+    is_adamc = name == "AdamC"
+    
     if use_param_groups and len(model_parts) == 1 and not optim_in_bwd:
-        param_groups = get_param_groups(optimizer_config, model_parts[0])
+        param_groups = get_param_groups(optimizer_config, model_parts[0], for_adamc=is_adamc)
         # Don't add weight_decay to optimizer_kwargs when using param groups
     else:
         # Add weight_decay when not using parameter groups
         optimizer_kwargs["weight_decay"] = weight_decay
 
+    # Add lr_max for AdamC
+    if is_adamc:
+        # In torchtitan, lr is the peak learning rate (reached after warmup)
+        # so we use it as lr_max for AdamC
+        optimizer_kwargs["lr_max"] = lr
+
     optimizer_classes = {
         "Adam": torch.optim.Adam,
         "AdamW": torch.optim.AdamW,
+        "AdamC": AdamC,
     }
     if name not in optimizer_classes:
         raise NotImplementedError(f"Optimizer {name} not added.")
